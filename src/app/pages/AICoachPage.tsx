@@ -7,7 +7,7 @@ import {
 } from "lucide-react";
 import { toast } from "sonner";
 import { useApp } from "../context/AppContext";
-import { fullDayNames, dayNames } from "../data/mockData";
+import { fullDayNames, dayNames, workouts, exercises, type Workout, type Exercise } from "../data/mockData";
 import { getAIResponseStreaming, generateWorkoutPlan, refineWorkoutPlan, getRandomExpert, type WorkoutPlan } from "../utils/gemini";
 
 const ACCENT = "#CCFF00";
@@ -56,7 +56,8 @@ interface Message {
   timestamp: Date;
 }
 
-type GeneratedPlan = WorkoutPlan;
+// Hozzáadunk egy opcionális ID-t az adatbázisba való elmentéshez
+type GeneratedPlan = WorkoutPlan & { id?: string };
 
 // ─── Main Component ──────────────────────────────────────────────────────────
 
@@ -323,6 +324,9 @@ function ChatTab() {
 // ─── Plan Generator Tab ──────────────────────────────────────────────────────
 
 const EQUIPMENT = ["No Equipment", "Dumbbells", "Barbell", "Machines", "Resistance Bands", "Pull-up Bar"];
+const MUSCLES = ["Full Body", "Upper Body", "Lower Body", "Core", "Chest", "Back", "Shoulders", "Arms", "Legs", "Glutes"];
+const CARDIO_TYPES = ["Bodyweight / HIIT", "Running", "Cycling", "Swimming", "Rowing", "Jump Rope", "Elliptical"];
+const STRETCH_FOCUS = ["Full Body", "Lower Body", "Upper Body", "Hips", "Hamstrings", "Back", "Shoulders", "Neck", "Calves"];
 
 const EXTRA_EXERCISES: Record<string, GeneratedPlan["exercises"]> = {
   strength: [
@@ -390,20 +394,17 @@ function generatePlan(prefs: {
 
   const pool = exerciseSets[prefs.type as keyof typeof exerciseSets] || exerciseSets.strength;
   const count = prefs.duration <= 20 ? 3 : prefs.duration <= 40 ? 5 : 7;
-  const selected = pool.slice(0, count);
+  
+  // Keverjük meg a gyakorlatokat a változatosság kedvéért
+  const shuffledPool = [...pool].sort(() => Math.random() - 0.5);
+  const selected = shuffledPool.slice(0, count);
 
   const intensityMult = prefs.intensity === "low" ? 0.7 : prefs.intensity === "high" ? 1.3 : 1;
   const calories = Math.round(prefs.duration * (prefs.type === "cardio" ? 10 : 7) * intensityMult);
 
-  const typeLabel: Record<string, string> = {
-    single: "Single Session",
-    weekly: "7-Day Weekly Plan",
-    monthly: "4-Week Monthly Plan",
-  };
-
   return {
-    name: `AI-Generated ${prefs.type.charAt(0).toUpperCase() + prefs.type.slice(1)} ${typeLabel[prefs.planType] || "Workout"}`,
-    type: typeLabel[prefs.planType] || "Workout",
+    name: `AI-Generated ${prefs.type.charAt(0).toUpperCase() + prefs.type.slice(1)} Workout`,
+    type: "Workout",
     duration: prefs.duration,
     exercises: selected,
     totalCalories: calories,
@@ -411,16 +412,112 @@ function generatePlan(prefs: {
   };
 }
 
+// ─── Helper for mock refining multiple plans identically ─────────────────────
+function applyMockRefinement(plan: GeneratedPlan, prompt: string, type: string): { plan: GeneratedPlan, message: string } {
+  const lower = prompt.toLowerCase();
+  let updated = { ...plan, exercises: plan.exercises.map(e => ({ ...e })) };
+  let message = "";
+
+  if (lower.includes("harder") || lower.includes("intense") || lower.includes("difficult") || lower.includes("increase")) {
+    updated.exercises = updated.exercises.map(ex => ({
+      ...ex,
+      sets: Math.min((ex.sets || 3) + 1, 6),
+      reps: ex.reps ? Math.min(ex.reps + 2, 20) : ex.reps,
+      durationSec: ex.durationSec ? Math.min(ex.durationSec + 15, 120) : ex.durationSec,
+    }));
+    updated.totalCalories = Math.round(updated.totalCalories * 1.2);
+    message = "Boosted sets & reps across all exercises for a higher intensity session.";
+  } else if (lower.includes("easier") || lower.includes("lighter") || lower.includes("beginner") || lower.includes("reduce")) {
+    updated.exercises = updated.exercises.map(ex => ({
+      ...ex,
+      sets: Math.max((ex.sets || 3) - 1, 1),
+      reps: ex.reps ? Math.max(ex.reps - 2, 5) : ex.reps,
+      durationSec: ex.durationSec ? Math.max(ex.durationSec - 10, 20) : ex.durationSec,
+    }));
+    updated.totalCalories = Math.round(updated.totalCalories * 0.8);
+    message = "Reduced sets & reps for a more manageable session.";
+  } else if (lower.includes("shorter") || lower.includes("quick") || lower.includes("fewer")) {
+    if (updated.exercises.length > 2) {
+      updated.exercises = updated.exercises.slice(0, -1);
+      message = `Trimmed to ${updated.exercises.length} exercises for a shorter session.`;
+    } else {
+      message = "Already at the minimum — 2 exercises remain.";
+    }
+  } else if (lower.includes("longer") || lower.includes("more exercise") || lower.includes("add more") || lower.includes("extra")) {
+    const pool = EXTRA_EXERCISES[type as keyof typeof EXTRA_EXERCISES] || EXTRA_EXERCISES.strength;
+    const existing = updated.exercises.map(e => e.name);
+    const newEx = pool.find(e => !existing.includes(e.name));
+    if (newEx) {
+      updated.exercises = [...updated.exercises, newEx];
+      message = `Added "${newEx.name}" to extend your session.`;
+    } else {
+      message = "All available exercises are already in the plan.";
+    }
+  } else if (lower.includes("warm up") || lower.includes("warmup")) {
+    const warmupNames = ["Light Jog / March", "Dynamic Arm Circles"];
+    if (!updated.exercises.some(e => warmupNames.includes(e.name))) {
+      updated.exercises = [
+        { name: "Light Jog / March", sets: 1, durationSec: 180, muscleGroups: ["Full Body"] },
+        { name: "Dynamic Arm Circles", sets: 1, reps: 15, muscleGroups: ["Shoulders"] },
+        ...updated.exercises,
+      ];
+      message = "Added a warm-up block at the beginning.";
+    } else {
+      message = "Warm-up block is already included.";
+    }
+  } else if (lower.includes("cool down") || lower.includes("cooldown")) {
+    const cooldownNames = ["Standing Quad Stretch", "Child's Pose"];
+    if (!updated.exercises.some(e => cooldownNames.includes(e.name))) {
+      updated.exercises = [
+        ...updated.exercises,
+        { name: "Standing Quad Stretch", sets: 1, durationSec: 40, muscleGroups: ["Quadriceps"] },
+        { name: "Child's Pose", sets: 1, durationSec: 60, muscleGroups: ["Core", "Back"] },
+      ];
+      message = "Added a cool-down block at the end.";
+    } else {
+      message = "Cool-down block is already included.";
+    }
+  } else if (lower.includes("no equipment") || lower.includes("bodyweight") || lower.includes("home")) {
+    const bw: GeneratedPlan["exercises"] = [
+      { name: "Push-Ups", sets: 3, reps: 15, muscleGroups: ["Chest", "Triceps"] },
+      { name: "Bodyweight Squats", sets: 3, reps: 20, muscleGroups: ["Legs", "Glutes"] },
+      { name: "Plank", sets: 3, durationSec: 45, muscleGroups: ["Core"] },
+      { name: "Mountain Climbers", sets: 3, durationSec: 30, muscleGroups: ["Core", "Shoulders"] },
+      { name: "Glute Bridges", sets: 3, reps: 15, muscleGroups: ["Glutes", "Hamstrings"] },
+      { name: "Tricep Dips (Chair)", sets: 3, reps: 12, muscleGroups: ["Triceps"] },
+      { name: "Superman Hold", sets: 3, durationSec: 30, muscleGroups: ["Back", "Glutes"] },
+    ];
+    updated.exercises = bw.slice(0, updated.exercises.length);
+    message = "Swapped to bodyweight-only exercises — no equipment needed.";
+  } else {
+    updated.exercises = updated.exercises.map(ex => ({
+      ...ex,
+      reps: ex.reps ? Math.max(ex.reps + (Math.random() > 0.5 ? 1 : -1), 5) : ex.reps,
+    }));
+    message = "Applied minor refinements based on your request.";
+  }
+
+  return { plan: updated, message };
+}
+
 function PlanGeneratorTab() {
-  const { addToSchedule } = useApp();
+  const { addToSchedule, saveTemplate } = useApp();
   const [step, setStep] = useState(0);
   const [type, setType] = useState("strength");
   const [planType, setPlanType] = useState("single");
+  
+  // Duration states
   const [duration, setDuration] = useState(45);
+  const [isCustomDuration, setIsCustomDuration] = useState(false);
+  
+  // Custom preferences
   const [equipment, setEquipment] = useState<string[]>(["Barbell"]);
-  const [muscles, setMuscles] = useState<string[]>(["Chest", "Back"]);
+  const [muscles, setMuscles] = useState<string[]>(["Full Body"]);
+  const [cardioTypes, setCardioTypes] = useState<string[]>(["Bodyweight / HIIT"]);
   const [intensity, setIntensity] = useState("medium");
-  const [generatedPlan, setGeneratedPlan] = useState<GeneratedPlan | null>(null);
+
+  // Több napot tároló array (a single is 1 elemű arrayként jelenik meg)
+  const [generatedPlans, setGeneratedPlans] = useState<GeneratedPlan[] | null>(null);
   const [generating, setGenerating] = useState(false);
   const [saved, setSaved] = useState(false);
   
@@ -435,7 +532,9 @@ function PlanGeneratorTab() {
   const todayIdx   = getTodayDOW();
   const modalGrid  = buildMonthGrid(modalMonth.getFullYear(), modalMonth.getMonth());
 
+  // Edit Modal States
   const [showEditModal, setShowEditModal] = useState(false);
+  const [editPlanIdx, setEditPlanIdx] = useState<number | null>(null);
   const [editedExercises, setEditedExercises] = useState<GeneratedPlan["exercises"]>([]);
   const [showAddForm, setShowAddForm] = useState(false);
   const [newExName, setNewExName] = useState("");
@@ -446,32 +545,115 @@ function PlanGeneratorTab() {
   const [refining, setRefining] = useState(false);
   const [refinements, setRefinements] = useState<{ prompt: string; message: string }[]>([]);
   
+  const mainScrollRef = useRef<HTMLDivElement>(null);
   const refineEndRef = useRef<HTMLDivElement>(null);
 
-  const totalSteps = type === "strength" ? 5 : 4;
+  const totalSteps = type === "strength" ? 6 : 5;
 
   const generate = async () => {
     setGenerating(true);
+
+    const safeEquipment = type === "strength" ? equipment : type === "cardio" ? cardioTypes : ["No Equipment"];
+    const safeMuscles = (type === "strength" || type === "stretching") && muscles.length > 0 ? muscles : ["Full Body"];
+
+    let count = 1;
+    if (planType === "weekly") count = 7;
+    if (planType === "monthly") count = 28;
+
+    const results: GeneratedPlan[] = [];
+    let basePlan: GeneratedPlan;
+
+    // Generálunk EGY tervet az AI-val, majd ezt használjuk sablonként
     try {
-      const plan = await generateWorkoutPlan({ type, planType, duration, equipment, muscleGroups: muscles, intensity });
-      setGeneratedPlan(plan);
+      const planRes = await generateWorkoutPlan({ 
+        type, 
+        planType: "single", // Csak egy alap tervet kérünk
+        duration, 
+        equipment: safeEquipment, 
+        muscleGroups: safeMuscles, 
+        intensity 
+      });
+      basePlan = planRes as GeneratedPlan;
     } catch (error) {
       console.error("Gemini plan generation failed:", error);
-      const plan = generatePlan({ type, planType, duration, equipment, muscleGroups: muscles, intensity });
-      setGeneratedPlan(plan);
-    } finally {
-      setGenerating(false);
+      const planRes = generatePlan({ 
+        type, 
+        planType: "single", 
+        duration, 
+        equipment: safeEquipment, 
+        muscleGroups: safeMuscles, 
+        intensity 
+      });
+      basePlan = planRes as GeneratedPlan;
     }
+
+    // Elosztjuk a kért napokra (ha több napot kért a felhasználó)
+    for (let i = 0; i < count; i++) {
+      const dayNum = i + 1;
+      // Aktív pihenő: minden 7. nap, vagy 4 hetes tervnél a 4. és 7. nap
+      const isRest = count > 1 && (dayNum % 7 === 0 || (count > 7 && dayNum % 7 === 4));
+
+      if (isRest) {
+        results.push({
+          id: `ai-plan-${Date.now()}-${i}`,
+          name: `Day ${dayNum} - Active Recovery`,
+          type: "Recovery",
+          duration: 20,
+          totalTime: 20,
+          totalCalories: 100,
+          exercises: EXTRA_EXERCISES.stretching.slice(0, 3)
+        });
+        continue;
+      }
+
+      // Különböző izomfókusz naponként a változatosságért
+      const dayMuscles = safeMuscles.length > 1 ? [safeMuscles[i % safeMuscles.length]] : safeMuscles;
+      
+      let dayPlan: GeneratedPlan;
+      if (i === 0 && count > 1) {
+        // Első nap mindig a pontosan visszakapott Gemini terv (ha több napos)
+        dayPlan = JSON.parse(JSON.stringify(basePlan));
+        dayPlan.name = `Day 1 - ${dayPlan.name}`;
+      } else if (count === 1) {
+        // Ha Single Session, nem írunk elé "Day 1"-t
+        dayPlan = JSON.parse(JSON.stringify(basePlan));
+      } else {
+        // A többi napot lokálisan variáljuk, hogy gyors legyen és ne küldjünk 28 API kérést
+        dayPlan = generatePlan({ 
+          type, planType: "single", duration, equipment: safeEquipment, muscleGroups: dayMuscles, intensity 
+        }) as GeneratedPlan;
+        dayPlan.exercises = dayPlan.exercises.sort(() => Math.random() - 0.5);
+        dayPlan.name = `Day ${dayNum} - ${dayMuscles.join(", ")} Focus`;
+      }
+
+      // Progresszió (Minden héten egy kicsit nehezebb)
+      const weekBonus = Math.floor(i / 7);
+      if (weekBonus > 0) {
+        dayPlan.exercises.forEach((ex: any) => {
+          if (ex.reps) ex.reps += weekBonus * 2;
+          if (ex.durationSec) ex.durationSec += weekBonus * 5;
+        });
+        dayPlan.totalCalories += weekBonus * 30;
+      }
+
+      dayPlan.id = `ai-plan-${Date.now()}-${i}`;
+      results.push(dayPlan);
+    }
+
+    setGeneratedPlans(results);
+    setGenerating(false);
   };
 
   const reset = () => {
     setStep(0);
-    setGeneratedPlan(null);
+    setGeneratedPlans(null);
     setSaved(false);
     setShowScheduleModal(false);
     setShowEditModal(false);
+    setEditPlanIdx(null);
     setRefinements([]);
     setRefineInput("");
+    setIsCustomDuration(false);
   };
 
   const openScheduleModal = () => {
@@ -486,18 +668,80 @@ function PlanGeneratorTab() {
     setSelectedModalDays([]);
   };
 
+  // ────────────────────────────────────────────────────────
+  // A LÉNYEG: Beíratjuk a globális Mock Data arrayekbe az új tervet
+  // hogy a CalendarPage megtalálja, majd Schedule-oljuk
+  // ────────────────────────────────────────────────────────
+  const ensurePlanInMockDB = (plan: GeneratedPlan) => {
+    if (!plan.id) return;
+    
+    // Ha még nem írtuk be a globális listába:
+    if (!workouts.find(w => w.id === plan.id)) {
+      // Gyakorlatok betöltése a globális Exercises listába
+      const generatedExIds = plan.exercises.map((ex, exIdx) => {
+        const exId = `ai-ex-${plan.id}-${exIdx}`;
+        if (!exercises.find(e => e.id === exId)) {
+          exercises.push({
+            id: exId,
+            name: ex.name,
+            muscleGroups: ex.muscleGroups && ex.muscleGroups.length > 0 ? ex.muscleGroups : ["Full Body"],
+            expert: { name: "AI Coach", title: "Virtual Trainer", tip: "Focus on maintaining proper form throughout the movement." },
+            steps: ["Prepare your starting position.", "Execute the movement smoothly.", "Return to start and repeat."],
+            commonMistakes: ["Rushing the tempo.", "Holding your breath."],
+            sets: ex.sets,
+            reps: ex.reps,
+            durationSec: ex.durationSec,
+          } as Exercise);
+        }
+        return exId;
+      });
+
+      // Terv betöltése a globális Workouts listába
+      workouts.push({
+        id: plan.id,
+        name: plan.name,
+        category: type,
+        level: intensity,
+        duration: plan.totalTime,
+        calories: plan.totalCalories,
+        exerciseCount: plan.exercises.length,
+        exerciseIds: generatedExIds,
+        type: planType === "single" ? "single" : "weekly", // a Calendar design miatt
+        description: "AI Generated Custom Plan",
+      } as Workout);
+    }
+  };
+
   const handleScheduleConfirm = () => {
-    selectedModalDays.forEach(dayIdx => {
-      // Dinamikusan generált terveknek egyelőre csak a w1 mock id-ját tudjuk átadni a Schedule funkcióban
-      addToSchedule("w1", dayIdx);
+    // Sorba rendezzük a kijelölt napokat, és mindegyikhez rendelünk egyet a generált terv napjai közül
+    selectedModalDays.sort((a,b) => a - b).forEach((dayIdx, index) => {
+      const planToSchedule = generatedPlans![index % generatedPlans!.length];
+      
+      // Biztosítjuk, hogy a naptár (CalendarPage) megtalálja
+      ensurePlanInMockDB(planToSchedule);
+      
+      // Hozzáadjuk a Schedule-hez a tényleges generált ID-t a "w1" helyett
+      addToSchedule(planToSchedule.id!, dayIdx);
     });
-    toast.success("Workout scheduled successfully!");
+    toast.success("Program scheduled successfully!");
     closeScheduleModal();
   };
 
-  const openEdit = () => {
-    if (!generatedPlan) return;
-    setEditedExercises(generatedPlan.exercises.map(e => ({ ...e })));
+  // MENTÉS gomb logika
+  const handleSaveAll = () => {
+    if (!generatedPlans) return;
+    generatedPlans.forEach(plan => {
+      ensurePlanInMockDB(plan);
+      saveTemplate(plan.id!);
+    });
+    setSaved(true);
+    toast.success("Plan saved to your profile!");
+  };
+
+  const openEdit = (idx: number) => {
+    if (!generatedPlans) return;
+    setEditPlanIdx(idx);
+    setEditedExercises(generatedPlans[idx].exercises.map(e => ({ ...e })));
     setShowAddForm(false);
     setNewExName("");
     setNewExSets("3");
@@ -506,9 +750,12 @@ function PlanGeneratorTab() {
   };
 
   const saveEdits = () => {
-    if (!generatedPlan) return;
-    setGeneratedPlan({ ...generatedPlan, exercises: editedExercises });
+    if (!generatedPlans || editPlanIdx === null) return;
+    const updated = [...generatedPlans];
+    updated[editPlanIdx] = { ...updated[editPlanIdx], exercises: editedExercises };
+    setGeneratedPlans(updated);
     setShowEditModal(false);
+    setEditPlanIdx(null);
   };
 
   const updateEx = (i: number, field: string, value: string) => {
@@ -534,151 +781,62 @@ function PlanGeneratorTab() {
   };
 
   const refinePrompt = async (prompt: string) => {
-    if (!generatedPlan || !prompt.trim() || refining) return;
+    if (!generatedPlans || !prompt.trim() || refining) return;
     
-    // Elmentjük a kiküldött kérdést, és jelezzük, hogy tölt
     const userPrompt = prompt.trim();
     setRefining(true);
     setRefineInput("");
-    setRefinements(prev => [...prev, { prompt: userPrompt, message: "" }]); // Ideiglenes üres üzenet
+    setRefinements(prev => [...prev, { prompt: userPrompt, message: "" }]);
 
-    try {
-      const { plan, summary } = await refineWorkoutPlan(generatedPlan, userPrompt);
-      setGeneratedPlan(plan);
-      // Frissítjük az utolsó elemet a kapott válasszal
-      setRefinements(prev => {
-        const newRef = [...prev];
-        newRef[newRef.length - 1].message = summary || "Updated the workout plan with Gemini.";
-        return newRef;
-      });
-      setRefining(false);
-      return;
-    } catch (error) {
-      console.error("Gemini refinement failed:", error);
+    // Ha csak egy tervünk van, bátran meghívjuk a Gemini API-t
+    if (generatedPlans.length === 1) {
+      try {
+        const { plan, summary } = await refineWorkoutPlan(generatedPlans[0], userPrompt);
+        
+        // JAVÍTÁS: Típuskonverzió a spread után, hogy megőrizzük az azonosítót
+        const updatedPlan: GeneratedPlan = { 
+          ...plan, 
+          id: generatedPlans[0].id 
+        };
+        
+        setGeneratedPlans([updatedPlan]);
+        setRefinements(prev => {
+          const newRef = [...prev];
+          newRef[newRef.length - 1].message = summary || "Updated the workout plan with Gemini.";
+          return newRef;
+        });
+        setRefining(false);
+        return;
+      } catch (error) {
+        console.error("Gemini refinement failed:", error);
+      }
     }
 
-    // Mock fallback, ha a Gemini hibára fut:
+    // Multi-day (vagy Fallback) finomítás
     await new Promise(r => setTimeout(r, 1400 + Math.random() * 600));
 
-    const lower = userPrompt.toLowerCase();
-    let updated = { ...generatedPlan, exercises: generatedPlan.exercises.map(e => ({ ...e })) };
-    let message = "";
+    let finalMessage = "";
+    const updatedPlans = generatedPlans.map(plan => {
+      const res = applyMockRefinement(plan, userPrompt, type);
+      finalMessage = res.message; // Mindig az utolsót mentjük el
+      // Megtartjuk a meglévő ID-t a frissített objektumban is
+      return { ...res.plan, id: plan.id } as GeneratedPlan;
+    });
 
-    if (lower.includes("harder") || lower.includes("intense") || lower.includes("difficult") || lower.includes("increase")) {
-      updated.exercises = updated.exercises.map(ex => ({
-        ...ex,
-        sets: Math.min((ex.sets || 3) + 1, 6),
-        reps: ex.reps ? Math.min(ex.reps + 2, 20) : ex.reps,
-        durationSec: ex.durationSec ? Math.min(ex.durationSec + 15, 120) : ex.durationSec,
-      }));
-      updated.totalCalories = Math.round(updated.totalCalories * 1.2);
-      message = "Boosted sets & reps across all exercises for a higher intensity session.";
-    } else if (lower.includes("easier") || lower.includes("lighter") || lower.includes("beginner") || lower.includes("reduce")) {
-      updated.exercises = updated.exercises.map(ex => ({
-        ...ex,
-        sets: Math.max((ex.sets || 3) - 1, 1),
-        reps: ex.reps ? Math.max(ex.reps - 2, 5) : ex.reps,
-        durationSec: ex.durationSec ? Math.max(ex.durationSec - 10, 20) : ex.durationSec,
-      }));
-      updated.totalCalories = Math.round(updated.totalCalories * 0.8);
-      message = "Reduced sets & reps for a more manageable session.";
-    } else if (lower.includes("shorter") || lower.includes("quick") || lower.includes("fewer")) {
-      if (updated.exercises.length > 2) {
-        updated.exercises = updated.exercises.slice(0, -1);
-        message = `Trimmed to ${updated.exercises.length} exercises for a shorter session.`;
-      } else {
-        message = "Already at the minimum — 2 exercises remain.";
-      }
-    } else if (lower.includes("longer") || lower.includes("more exercise") || lower.includes("add more") || lower.includes("extra")) {
-      const pool = EXTRA_EXERCISES[type as keyof typeof EXTRA_EXERCISES] || EXTRA_EXERCISES.strength;
-      const existing = updated.exercises.map(e => e.name);
-      const newEx = pool.find(e => !existing.includes(e.name));
-      if (newEx) {
-        updated.exercises = [...updated.exercises, newEx];
-        message = `Added "${newEx.name}" to extend your session.`;
-      } else {
-        message = "All available exercises are already in the plan.";
-      }
-    } else if (lower.includes("warm up") || lower.includes("warmup")) {
-      const warmupNames = ["Light Jog / March", "Dynamic Arm Circles"];
-      if (!updated.exercises.some(e => warmupNames.includes(e.name))) {
-        updated.exercises = [
-          { name: "Light Jog / March", sets: 1, durationSec: 180, muscleGroups: ["Full Body"] },
-          { name: "Dynamic Arm Circles", sets: 1, reps: 15, muscleGroups: ["Shoulders"] },
-          ...updated.exercises,
-        ];
-        message = "Added a warm-up block at the beginning.";
-      } else {
-        message = "Warm-up block is already included.";
-      }
-    } else if (lower.includes("cool down") || lower.includes("cooldown")) {
-      const cooldownNames = ["Standing Quad Stretch", "Child's Pose"];
-      if (!updated.exercises.some(e => cooldownNames.includes(e.name))) {
-        updated.exercises = [
-          ...updated.exercises,
-          { name: "Standing Quad Stretch", sets: 1, durationSec: 40, muscleGroups: ["Quadriceps"] },
-          { name: "Child's Pose", sets: 1, durationSec: 60, muscleGroups: ["Core", "Back"] },
-        ];
-        message = "Added a cool-down block at the end.";
-      } else {
-        message = "Cool-down block is already included.";
-      }
-    } else if (lower.includes("no equipment") || lower.includes("bodyweight") || lower.includes("home")) {
-      const bw: GeneratedPlan["exercises"] = [
-        { name: "Push-Ups", sets: 3, reps: 15, muscleGroups: ["Chest", "Triceps"] },
-        { name: "Bodyweight Squats", sets: 3, reps: 20, muscleGroups: ["Legs", "Glutes"] },
-        { name: "Plank", sets: 3, durationSec: 45, muscleGroups: ["Core"] },
-        { name: "Mountain Climbers", sets: 3, durationSec: 30, muscleGroups: ["Core", "Shoulders"] },
-        { name: "Glute Bridges", sets: 3, reps: 15, muscleGroups: ["Glutes", "Hamstrings"] },
-        { name: "Tricep Dips (Chair)", sets: 3, reps: 12, muscleGroups: ["Triceps"] },
-        { name: "Superman Hold", sets: 3, durationSec: 30, muscleGroups: ["Back", "Glutes"] },
-      ];
-      updated.exercises = bw.slice(0, updated.exercises.length);
-      message = "Swapped to bodyweight-only exercises — no equipment needed.";
-    } else {
-      const muscleMap: Record<string, { name: string; sets: number; reps: number; muscleGroups: string[] }> = {
-        chest: { name: "Incline Dumbbell Press", sets: 4, reps: 10, muscleGroups: ["Chest"] },
-        back: { name: "Barbell Row", sets: 4, reps: 10, muscleGroups: ["Back"] },
-        legs: { name: "Bulgarian Split Squat", sets: 3, reps: 10, muscleGroups: ["Legs", "Glutes"] },
-        shoulders: { name: "Arnold Press", sets: 3, reps: 12, muscleGroups: ["Shoulders"] },
-        arms: { name: "Hammer Curl", sets: 3, reps: 12, muscleGroups: ["Biceps"] },
-        core: { name: "Cable Crunch", sets: 3, reps: 15, muscleGroups: ["Core"] },
-        glutes: { name: "Hip Thrust", sets: 4, reps: 12, muscleGroups: ["Glutes"] },
-        biceps: { name: "Preacher Curl", sets: 3, reps: 12, muscleGroups: ["Biceps"] },
-        triceps: { name: "Skull Crushers", sets: 3, reps: 12, muscleGroups: ["Triceps"] },
-      };
-      const matchedMuscle = Object.keys(muscleMap).find(m => lower.includes(m));
-      if (matchedMuscle) {
-        const newEx = muscleMap[matchedMuscle];
-        if (!updated.exercises.some(e => e.name === newEx.name)) {
-          updated.exercises = [...updated.exercises, newEx];
-          message = `Added "${newEx.name}" to target your ${matchedMuscle}.`;
-        } else {
-          message = `Your ${matchedMuscle} is already well-targeted in this plan.`;
-        }
-      } else {
-        updated.exercises = updated.exercises.map(ex => ({
-          ...ex,
-          reps: ex.reps ? Math.max(ex.reps + (Math.random() > 0.5 ? 1 : -1), 5) : ex.reps,
-        }));
-        message = "Applied minor refinements based on your request.";
-      }
-    }
-
-    setGeneratedPlan(updated);
+    setGeneratedPlans(updatedPlans);
     setRefinements(prev => {
       const newRef = [...prev];
-      newRef[newRef.length - 1].message = message;
+      newRef[newRef.length - 1].message = finalMessage;
       return newRef;
     });
     setRefining(false);
   };
 
-  // Folyamatosan tekerjen a refine blokk aljára, ha új elem jön, vagy tölt.
   useEffect(() => {
     if (refining || refinements.length > 0) {
       setTimeout(() => {
         refineEndRef.current?.scrollIntoView({ behavior: "smooth", block: "nearest" });
+        mainScrollRef.current?.scrollTo({ top: mainScrollRef.current.scrollHeight, behavior: "smooth" });
       }, 100);
     }
   }, [refinements, refining]);
@@ -686,14 +844,28 @@ function PlanGeneratorTab() {
   const toggleEquipment = (e: string) =>
     setEquipment(prev => prev.includes(e) ? prev.filter(x => x !== e) : [...prev, e]);
 
+  const toggleMuscle = (m: string) =>
+    setMuscles(prev => prev.includes(m) ? prev.filter(x => x !== m) : [...prev, m]);
+
+  const toggleCardio = (c: string) =>
+    setCardioTypes(prev => prev.includes(c) ? prev.filter(x => x !== c) : [...prev, c]);
+
   const nextStep = () => {
+    if (step === 2 && (!duration || duration < 5)) {
+      toast.error("Please enter a valid duration (min. 5 minutes).");
+      return;
+    }
+
     if (step < totalSteps - 1) setStep(s => s + 1);
     else generate();
   };
 
-  if (generatedPlan) {
+  if (generatedPlans) {
+    const totalTimeAll = generatedPlans.reduce((sum, p) => sum + p.totalTime, 0);
+    const totalCaloriesAll = generatedPlans.reduce((sum, p) => sum + p.totalCalories, 0);
+
     return (
-      <div className="flex-1 overflow-y-auto px-6 py-4 pb-12" style={{ scrollbarWidth: "none" }}>
+      <div className="flex-1 flex flex-col min-h-0 overflow-hidden">
         
         {/* Full-Screen Schedule Picker Modal */}
         <AnimatePresence>
@@ -703,7 +875,8 @@ function PlanGeneratorTab() {
               onClick={closeScheduleModal}>
               <motion.div initial={{ y: 50 }} animate={{ y: 0 }} exit={{ y: 50 }} className="w-full max-w-[430px] rounded-3xl bg-card border border-border flex flex-col overflow-hidden" onClick={e => e.stopPropagation()}>
                 <div className="px-5 pt-5 pb-3 border-b border-border">
-                  <h3 className="text-foreground text-lg font-bold">Schedule Workout</h3>
+                  <h3 className="text-foreground text-lg font-bold">Schedule Plan</h3>
+                  <p className="text-muted-foreground text-xs mt-1">Select the START DATE for your {generatedPlans.length}-day plan.</p>
                   <div className="flex items-center justify-between mt-4">
                     <button onClick={() => setModalMonth(d => new Date(d.getFullYear(), d.getMonth() - 1, 1))} className="p-2"><ChevronLeft size={14} /></button>
                     <span className="text-sm font-semibold">{MONTH_NAMES[modalMonth.getMonth()]} {modalMonth.getFullYear()}</span>
@@ -718,7 +891,13 @@ function PlanGeneratorTab() {
                       const isPast = idx < todayIdx;
                       const isSelected = selectedModalDays.includes(idx);
                       return (
-                        <button key={i} disabled={isPast} onClick={() => setSelectedModalDays(prev => prev.includes(idx) ? prev.filter(d => d !== idx) : [...prev, idx])}
+                        <button key={i} disabled={isPast} 
+                          onClick={() => {
+                            // Instant kijelöli az adott naptól kezdve a program hosszának megfelelő mennyiségű napot
+                            const count = generatedPlans.length;
+                            const newDays = Array.from({ length: count }, (_, j) => idx + j);
+                            setSelectedModalDays(newDays);
+                          }}
                           className={`py-2 rounded-xl text-xs transition-all ${isSelected ? 'bg-accent text-black font-bold' : isPast ? 'opacity-20 pointer-events-none' : 'bg-muted'}`}
                           style={{ background: isSelected ? ACCENT : undefined }}>
                           {date.getDate()}
@@ -728,16 +907,23 @@ function PlanGeneratorTab() {
                   </div>
                 </div>
                 <div className="p-4 border-t border-border">
-                  <button onClick={handleScheduleConfirm} className="w-full py-3 rounded-2xl font-bold text-black" style={{ background: ACCENT }}>Confirm</button>
+                  <button 
+                    disabled={selectedModalDays.length === 0}
+                    onClick={handleScheduleConfirm} 
+                    className="w-full py-3 rounded-2xl font-bold text-black disabled:opacity-50 transition-all" 
+                    style={{ background: selectedModalDays.length > 0 ? ACCENT : "var(--muted)" }}
+                  >
+                    Confirm {selectedModalDays.length > 0 && `(${selectedModalDays.length} days)`}
+                  </button>
                 </div>
               </motion.div>
             </motion.div>
           )}
         </AnimatePresence>
 
-        {/* Edit Modal */}
+        {/* Edit Modal (Naponként hívjuk meg) */}
         <AnimatePresence>
-          {showEditModal && (
+          {showEditModal && editPlanIdx !== null && (
           <motion.div
             initial={{ opacity: 0 }}
             animate={{ opacity: 1 }}
@@ -773,7 +959,10 @@ function PlanGeneratorTab() {
 
                 {/* Header */}
                 <div className="flex items-center justify-between px-5 py-3 shrink-0 border-b border-border">
-                  <h3 className="text-foreground font-bold text-base">Edit Workout</h3>
+                  <div>
+                    <h3 className="text-foreground font-bold text-base">Edit Workout</h3>
+                    <p className="text-muted-foreground text-xs">{generatedPlans[editPlanIdx].name}</p>
+                  </div>
                   <button onClick={() => setShowEditModal(false)} className="p-1.5">
                     <X size={18} className="text-muted-foreground" />
                   </button>
@@ -925,193 +1114,200 @@ function PlanGeneratorTab() {
           )}
         </AnimatePresence>
 
-        {/* Header and Stats */}
-        <div className="flex items-center justify-between mb-4">
-          <div>
-            <h3 className="text-foreground font-bold text-lg">Your Plan is Ready!</h3>
-            <p className="text-muted-foreground text-xs">AI-generated & expert-backed</p>
-          </div>
-          <button onClick={reset} className="p-2 rounded-xl bg-card border border-border">
-            <RotateCcw size={14} className="text-muted-foreground" />
-          </button>
-        </div>
-
-        <div className="p-4 rounded-2xl mb-4" style={{ background: `${ACCENT}0D`, border: `1px solid ${ACCENT}25` }}>
-          <div
-            className="w-8 h-8 rounded-lg flex items-center justify-center mb-2"
-            style={{ background: ACCENT }}
-          >
-            <Zap size={16} color="#000" fill="#000" />
-          </div>
-          <h4 className="text-foreground font-bold text-base mb-0.5">{generatedPlan.name}</h4>
-          <p className="text-muted-foreground text-xs mb-3">{generatedPlan.type}</p>
-          <div className="flex gap-4">
-            <span className="text-xs flex items-center gap-1.5 text-muted-foreground">
-              <Clock size={11} strokeWidth={1.5} />{generatedPlan.totalTime}<span className="text-[10px]">min</span>
-            </span>
-            <span className="text-xs flex items-center gap-1.5 text-muted-foreground">
-              <Flame size={11} strokeWidth={1.5} />{generatedPlan.totalCalories}<span className="text-[10px]">kcal</span>
-            </span>
-            <span className="text-xs flex items-center gap-1.5 text-muted-foreground">
-              <Dumbbell size={11} strokeWidth={1.5} />{generatedPlan.exercises.length} exercises
-            </span>
-          </div>
-        </div>
-
-        {/* Exercises List */}
-        <div className="flex items-center justify-between mb-3">
-          <h4 className="text-foreground font-semibold text-sm">Exercises</h4>
-          <button
-            onClick={openEdit}
-            className="flex items-center gap-1.5 px-3 py-1.5 rounded-xl text-xs font-semibold transition-all"
-            style={{ background: `${ACCENT}15`, color: ACCENT, border: `1px solid ${ACCENT}35` }}
-          >
-            <Pencil size={11} /> Edit
-          </button>
-        </div>
-        <div className="flex flex-col gap-2 mb-6">
-          {generatedPlan.exercises.map((ex, i) => (
-            <div
-              key={i}
-              className="p-3.5 rounded-xl flex items-center gap-3 bg-card border border-border"
-            >
-              <div className="w-7 h-7 rounded-lg flex items-center justify-center text-xs font-bold text-black shrink-0" style={{ background: ACCENT }}>
-                {i + 1}
-              </div>
-              <div className="flex-1">
-                <p className="text-foreground text-sm font-semibold">{ex.name}</p>
-                <p className="text-muted-foreground text-xs">
-                  {ex.sets && ex.reps ? `${ex.sets} × ${ex.reps} reps` : ex.durationSec ? `${ex.sets}× ${ex.durationSec}s` : ""}
-                  {" · "}{ex.muscleGroups.join(", ")}
-                </p>
-              </div>
+        {/* Scrollable Content Area */}
+        <div ref={mainScrollRef} className="flex-1 overflow-y-auto px-6 py-4" style={{ scrollbarWidth: "none" }}>
+          <div className="flex items-center justify-between mb-4">
+            <div>
+              <h3 className="text-foreground font-bold text-lg">Your Plan is Ready!</h3>
+              <p className="text-muted-foreground text-xs">AI-generated & expert-backed</p>
             </div>
-          ))}
-        </div>
-
-        {/* ── Refine with AI Card ──────────────────────────────────── */}
-        <div className="mb-6 rounded-2xl overflow-hidden bg-card border border-border flex flex-col">
-          {/* Header */}
-          <div className="flex items-center gap-2 px-4 py-3 shrink-0 border-b border-border">
-            <div className="w-5 h-5 rounded-md flex items-center justify-center shrink-0" style={{ background: `${ACCENT}18` }}>
-              <Zap size={11} style={{ color: ACCENT }} />
-            </div>
-            <span className="text-foreground text-xs font-semibold">Refine with AI</span>
-            <span className="text-muted-foreground text-[10px] ml-auto">describe changes in plain text</span>
-          </div>
-
-          {/* Refinement history (Korlátozott magasságú görgethető rész, a kártyán BELLÜL) */}
-          {refinements.length > 0 && (
-            <div className="px-4 pt-3 pb-1 flex flex-col gap-2.5 max-h-[300px] overflow-y-auto" style={{ scrollbarWidth: "none" }}>
-              {refinements.map((r, i) => (
-                <div key={i}>
-                  <div className="flex justify-end mb-1">
-                    <div
-                      className="px-3 py-2 rounded-2xl text-xs max-w-[75%]"
-                      style={{ background: ACCENT, color: "#000", borderRadius: "14px 14px 3px 14px" }}
-                    >
-                      {r.prompt}
-                    </div>
-                  </div>
-                  {/* Ha még tölt az utolsó elem (üzenet üres), akkor töltő animációt mutatunk */}
-                  {r.message ? (
-                    <div className="flex items-start gap-1.5">
-                      <div className="w-5 h-5 rounded-full flex items-center justify-center shrink-0 mt-0.5" style={{ background: `${ACCENT}18`, border: `1px solid ${ACCENT}35` }}>
-                        <Bot size={10} style={{ color: ACCENT }} />
-                      </div>
-                      <div
-                        className="px-3 py-2 rounded-2xl text-xs flex-1 bg-muted text-foreground border border-border"
-                        style={{ borderRadius: "3px 14px 14px 14px" }}
-                      >
-                        {r.message}
-                      </div>
-                    </div>
-                  ) : (
-                    <div className="flex items-center gap-1.5 mb-1">
-                      <div className="w-5 h-5 rounded-full flex items-center justify-center shrink-0" style={{ background: `${ACCENT}18`, border: `1px solid ${ACCENT}35` }}>
-                        <Bot size={10} style={{ color: ACCENT }} />
-                      </div>
-                      <div className="px-3 py-2 rounded-2xl bg-muted border border-border" style={{ borderRadius: "3px 14px 14px 14px" }}>
-                        <div className="flex gap-1 items-center">
-                          {[0, 1, 2].map(idx => (
-                            <motion.div key={idx} className="w-1.5 h-1.5 rounded-full" style={{ background: ACCENT }}
-                              animate={{ opacity: [0.3, 1, 0.3] }}
-                              transition={{ duration: 0.8, repeat: Infinity, delay: idx * 0.2 }}
-                            />
-                          ))}
-                        </div>
-                      </div>
-                    </div>
-                  )}
-                </div>
-              ))}
-              <div ref={refineEndRef} />
-            </div>
-          )}
-
-          {/* Suggestion chips — shown only before first refinement */}
-          {refinements.length === 0 && !refining && (
-            <div className="px-4 pt-3 flex gap-2 flex-wrap">
-              {REFINE_SUGGESTIONS.map(s => (
-                <button
-                  key={s}
-                  onClick={() => refinePrompt(s)}
-                  className="px-2.5 py-1.5 rounded-lg text-[11px] transition-all bg-muted border border-border text-muted-foreground hover:bg-muted/80"
-                >
-                  {s}
-                </button>
-              ))}
-            </div>
-          )}
-
-          {/* Input row VISSZATÉVE a kártya aljára */}
-          <div className="flex gap-2 p-3 mt-1 border-t border-border">
-            <input
-              value={refineInput}
-              onChange={e => setRefineInput(e.target.value)}
-              onKeyDown={e => e.key === "Enter" && refinePrompt(refineInput)}
-              placeholder="e.g. make it shorter, add core work…"
-              disabled={refining}
-              className="flex-1 rounded-xl px-3 py-2 text-foreground text-xs outline-none placeholder:text-muted-foreground transition-colors bg-muted border border-border"
-              style={{ borderColor: refineInput ? "var(--muted-foreground)" : "var(--border)" }}
-            />
-            <button
-              onClick={() => refinePrompt(refineInput)}
-              disabled={!refineInput.trim() || refining}
-              className="w-8 h-8 rounded-xl flex items-center justify-center shrink-0 transition-all"
-              style={{
-                background: refineInput.trim() && !refining ? ACCENT : "var(--muted)",
-                border: `1px solid ${refineInput.trim() && !refining ? ACCENT : "var(--border)"}`,
-              }}
-            >
-              <Send size={13} style={{ color: refineInput.trim() && !refining ? "#000" : "var(--muted-foreground)" }} />
+            <button onClick={reset} className="p-2 rounded-xl bg-card border border-border">
+              <RotateCcw size={14} className="text-muted-foreground" />
             </button>
           </div>
-        </div>
-        {/* ─────────────────────────────────────────────────────── */}
 
-        {/* Save and Schedule Buttons (A Refine kártya ALATT) */}
-        <div className="flex gap-2">
-          <button
-            onClick={() => { setSaved(true); }}
-            className="flex-1 py-3.5 rounded-xl text-sm font-semibold flex items-center justify-center gap-1.5"
-            style={{
-              background: "transparent",
-              color: saved ? ACCENT : "var(--muted-foreground)",
-              border: `1px solid ${saved ? ACCENT : "var(--border)"}`,
-            }}
-          >
-            {saved ? <><Check size={14} /> Saved!</> : <><Bookmark size={14} /> Save Plan</>}
-          </button>
-          <button
-            onClick={openScheduleModal}
-            className="flex-1 py-3.5 rounded-xl text-sm font-semibold flex items-center justify-center gap-1.5 text-black"
-            style={{ background: ACCENT }}
-          >
-            <Calendar size={14} /> Schedule
-          </button>
-        </div>
+          {/* Program Overview Card */}
+          <div className="p-4 rounded-2xl mb-6" style={{ background: `${ACCENT}0D`, border: `1px solid ${ACCENT}25` }}>
+            <div
+              className="w-8 h-8 rounded-lg flex items-center justify-center mb-2"
+              style={{ background: ACCENT }}
+            >
+              <Zap size={16} color="#000" fill="#000" />
+            </div>
+            <h4 className="text-foreground font-bold text-base mb-0.5">
+              {planType === "single" ? generatedPlans[0].name : `${planType === 'weekly' ? '7-Day' : '4-Week'} ${type.charAt(0).toUpperCase() + type.slice(1)} Plan`}
+            </h4>
+            <div className="flex gap-4 mt-3">
+              <span className="text-xs flex items-center gap-1.5 text-muted-foreground">
+                <Clock size={11} strokeWidth={1.5} />{generatedPlans.length > 1 ? `${generatedPlans.length} sessions` : `${totalTimeAll} min`}
+              </span>
+              <span className="text-xs flex items-center gap-1.5 text-muted-foreground">
+                <Flame size={11} strokeWidth={1.5} />
+                {generatedPlans.length > 1 ? `~${Math.round(totalCaloriesAll / generatedPlans.length)} kcal/avg` : `${totalCaloriesAll} kcal`}
+              </span>
+            </div>
+          </div>
 
+          {/* Render All Workouts (Days) */}
+          <div className="flex flex-col gap-6 mb-6">
+            {generatedPlans.map((plan, pIdx) => (
+              <div key={pIdx} className="bg-card border border-border rounded-2xl overflow-hidden shadow-sm">
+                <div className="px-4 py-3 border-b border-border flex items-center justify-between bg-muted/40">
+                  <h5 className="font-bold text-sm text-foreground">{plan.name}</h5>
+                  <button
+                    onClick={() => openEdit(pIdx)}
+                    className="flex items-center gap-1.5 px-2.5 py-1.5 rounded-lg text-[11px] font-semibold transition-all border border-border bg-background text-muted-foreground hover:bg-muted"
+                  >
+                    <Pencil size={11} /> Edit
+                  </button>
+                </div>
+                
+                <div className="p-4 flex flex-col gap-2 bg-card">
+                  {plan.exercises.map((ex, i) => (
+                    <div
+                      key={i}
+                      className="py-2 flex items-center gap-3 border-b border-border last:border-0 last:pb-0"
+                    >
+                      <div className="w-6 h-6 rounded-md flex items-center justify-center text-[10px] font-bold text-black shrink-0" style={{ background: ACCENT }}>
+                        {i + 1}
+                      </div>
+                      <div className="flex-1 min-w-0">
+                        <p className="text-foreground text-sm font-semibold truncate">{ex.name}</p>
+                        <p className="text-muted-foreground text-xs mt-0.5">
+                          {ex.sets && ex.reps ? `${ex.sets} × ${ex.reps} reps` : ex.durationSec ? `${ex.sets}× ${ex.durationSec}s` : ""}
+                        </p>
+                      </div>
+                    </div>
+                  ))}
+                </div>
+              </div>
+            ))}
+          </div>
+
+          {/* ── Refine with AI Card ──────────────────────────────────── */}
+          <div className="mb-6 rounded-2xl overflow-hidden bg-card border border-border flex flex-col shadow-sm">
+            {/* Header */}
+            <div className="flex items-center gap-2 px-4 py-3 shrink-0 border-b border-border">
+              <div className="w-5 h-5 rounded-md flex items-center justify-center shrink-0" style={{ background: `${ACCENT}18` }}>
+                <Zap size={11} style={{ color: ACCENT }} />
+              </div>
+              <span className="text-foreground text-xs font-semibold">Refine with AI</span>
+              <span className="text-muted-foreground text-[10px] ml-auto">describe changes in plain text</span>
+            </div>
+
+            {/* Refinement history */}
+            {refinements.length > 0 && (
+              <div className="px-4 pt-3 pb-1 flex flex-col gap-2.5 max-h-[300px] overflow-y-auto" style={{ scrollbarWidth: "none" }}>
+                {refinements.map((r, i) => (
+                  <div key={i}>
+                    <div className="flex justify-end mb-1">
+                      <div
+                        className="px-3 py-2 rounded-2xl text-xs max-w-[75%]"
+                        style={{ background: ACCENT, color: "#000", borderRadius: "14px 14px 3px 14px" }}
+                      >
+                        {r.prompt}
+                      </div>
+                    </div>
+                    {/* Ha még tölt */}
+                    {r.message ? (
+                      <div className="flex items-start gap-1.5">
+                        <div className="w-5 h-5 rounded-full flex items-center justify-center shrink-0 mt-0.5" style={{ background: `${ACCENT}18`, border: `1px solid ${ACCENT}35` }}>
+                          <Bot size={10} style={{ color: ACCENT }} />
+                        </div>
+                        <div
+                          className="px-3 py-2 rounded-2xl text-xs flex-1 bg-muted text-foreground border border-border"
+                          style={{ borderRadius: "3px 14px 14px 14px" }}
+                        >
+                          {r.message}
+                        </div>
+                      </div>
+                    ) : (
+                      <div className="flex items-center gap-1.5 mb-1">
+                        <div className="w-5 h-5 rounded-full flex items-center justify-center shrink-0" style={{ background: `${ACCENT}18`, border: `1px solid ${ACCENT}35` }}>
+                          <Bot size={10} style={{ color: ACCENT }} />
+                        </div>
+                        <div className="px-3 py-2 rounded-2xl bg-muted border border-border" style={{ borderRadius: "3px 14px 14px 14px" }}>
+                          <div className="flex gap-1 items-center">
+                            {[0, 1, 2].map(idx => (
+                              <motion.div key={idx} className="w-1.5 h-1.5 rounded-full" style={{ background: ACCENT }}
+                                animate={{ opacity: [0.3, 1, 0.3] }}
+                                transition={{ duration: 0.8, repeat: Infinity, delay: idx * 0.2 }}
+                              />
+                            ))}
+                          </div>
+                        </div>
+                      </div>
+                    )}
+                  </div>
+                ))}
+                <div ref={refineEndRef} />
+              </div>
+            )}
+
+            {/* Suggestion chips */}
+            {refinements.length === 0 && !refining && (
+              <div className="px-4 pt-3 flex gap-2 flex-wrap">
+                {REFINE_SUGGESTIONS.map(s => (
+                  <button
+                    key={s}
+                    onClick={() => refinePrompt(s)}
+                    className="px-2.5 py-1.5 rounded-lg text-[11px] transition-all bg-muted border border-border text-muted-foreground hover:bg-muted/80"
+                  >
+                    {s}
+                  </button>
+                ))}
+              </div>
+            )}
+
+            {/* Input row */}
+            <div className="flex gap-2 p-3 mt-1 border-t border-border">
+              <input
+                value={refineInput}
+                onChange={e => setRefineInput(e.target.value)}
+                onKeyDown={e => e.key === "Enter" && refinePrompt(refineInput)}
+                placeholder="e.g. make it shorter, add core work…"
+                disabled={refining}
+                className="flex-1 rounded-xl px-3 py-2 text-foreground text-xs outline-none placeholder:text-muted-foreground transition-colors bg-muted border border-border"
+                style={{ borderColor: refineInput ? "var(--muted-foreground)" : "var(--border)" }}
+              />
+              <button
+                onClick={() => refinePrompt(refineInput)}
+                disabled={!refineInput.trim() || refining}
+                className="w-8 h-8 rounded-xl flex items-center justify-center shrink-0 transition-all"
+                style={{
+                  background: refineInput.trim() && !refining ? ACCENT : "var(--muted)",
+                  border: `1px solid ${refineInput.trim() && !refining ? ACCENT : "var(--border)"}`,
+                }}
+              >
+                <Send size={13} style={{ color: refineInput.trim() && !refining ? "#000" : "var(--muted-foreground)" }} />
+              </button>
+            </div>
+          </div>
+          {/* ─────────────────────────────────────────────────────── */}
+
+          {/* Save and Schedule Buttons */}
+          <div className="flex gap-2">
+            <button
+              onClick={handleSaveAll}
+              className="flex-1 py-3.5 rounded-xl text-sm font-semibold flex items-center justify-center gap-1.5"
+              style={{
+                background: "transparent",
+                color: saved ? ACCENT : "var(--muted-foreground)",
+                border: `1px solid ${saved ? ACCENT : "var(--border)"}`,
+              }}
+            >
+              {saved ? <><Check size={14} /> Saved!</> : <><Bookmark size={14} /> Save Plan</>}
+            </button>
+            <button
+              onClick={openScheduleModal}
+              className="flex-1 py-3.5 rounded-xl text-sm font-semibold flex items-center justify-center gap-1.5 text-black shadow-lg"
+              style={{ background: ACCENT }}
+            >
+              <Calendar size={14} /> Schedule {generatedPlans.length > 1 && "Plan"}
+            </button>
+          </div>
+
+        </div>
       </div>
     );
   }
@@ -1228,7 +1424,7 @@ function PlanGeneratorTab() {
             </div>
           )}
 
-          {/* Step 2: Duration */}
+          {/* Step 2: Duration (Módosítva Egyedi opcióval) */}
           {step === 2 && (
             <div>
               <p className="text-xs font-semibold mb-1 uppercase tracking-wider" style={{ color: ACCENT }}>Step 3</p>
@@ -1238,17 +1434,46 @@ function PlanGeneratorTab() {
                 {[15, 30, 45, 60, 90].map(d => (
                   <button
                     key={d}
-                    onClick={() => setDuration(d)}
+                    onClick={() => { setDuration(d); setIsCustomDuration(false); }}
                     className="p-4 rounded-2xl border flex items-center justify-between transition-all"
                     style={{
-                      background: duration === d ? `${ACCENT}12` : "var(--card)",
-                      borderColor: duration === d ? ACCENT : "var(--border)",
+                      background: !isCustomDuration && duration === d ? `${ACCENT}12` : "var(--card)",
+                      borderColor: !isCustomDuration && duration === d ? ACCENT : "var(--border)",
                     }}
                   >
                     <span className="text-foreground font-semibold text-sm">{d} minutes</span>
-                    {duration === d && <Check size={14} style={{ color: ACCENT }} />}
+                    {!isCustomDuration && duration === d && <Check size={14} style={{ color: ACCENT }} />}
                   </button>
                 ))}
+                
+                {/* Egyéb / Custom Duration */}
+                <div className="flex gap-2 items-stretch mt-1">
+                  <button
+                    onClick={() => { setIsCustomDuration(true); if(duration === 0) setDuration(45); }}
+                    className="p-4 rounded-2xl border flex-1 flex items-center justify-between transition-all"
+                    style={{
+                      background: isCustomDuration ? `${ACCENT}12` : "var(--card)",
+                      borderColor: isCustomDuration ? ACCENT : "var(--border)",
+                    }}
+                  >
+                    <span className="text-foreground font-semibold text-sm">Other (Custom)</span>
+                    {isCustomDuration && <Check size={14} style={{ color: ACCENT }} />}
+                  </button>
+                  {isCustomDuration && (
+                    <div className="relative w-28 shrink-0">
+                      <input
+                        type="number"
+                        value={duration || ""}
+                        onChange={e => setDuration(parseInt(e.target.value) || 0)}
+                        className="w-full h-full p-4 rounded-2xl border bg-card text-foreground font-bold text-center outline-none transition-all"
+                        style={{ borderColor: ACCENT }}
+                        min={5}
+                        placeholder="Min"
+                      />
+                      <span className="absolute right-3 top-1/2 -translate-y-1/2 text-[10px] text-muted-foreground">min</span>
+                    </div>
+                  )}
+                </div>
               </div>
             </div>
           )}
@@ -1278,11 +1503,88 @@ function PlanGeneratorTab() {
             </div>
           )}
 
-          {/* Step 3 (cardio/stretching) or 4 (strength): Intensity */}
-          {((step === 3 && type !== "strength") || (step === 4 && type === "strength")) && (
+          {/* Step 3: Cardio Type (cardio only) */}
+          {step === 3 && type === "cardio" && (
+            <div>
+              <p className="text-xs font-semibold mb-1 uppercase tracking-wider" style={{ color: ACCENT }}>Step 4</p>
+              <h3 className="text-foreground text-xl font-bold mb-1">Cardio Style</h3>
+              <p className="text-muted-foreground text-sm mb-5">What kind of cardio?</p>
+              <div className="flex flex-wrap gap-2">
+                {CARDIO_TYPES.map(c => (
+                  <button
+                    key={c}
+                    onClick={() => toggleCardio(c)}
+                    className="px-4 py-2.5 rounded-xl text-sm font-semibold transition-all border"
+                    style={{
+                      background: cardioTypes.includes(c) ? `${ACCENT}15` : "var(--card)",
+                      borderColor: cardioTypes.includes(c) ? ACCENT : "var(--border)",
+                      color: cardioTypes.includes(c) ? ACCENT : "var(--muted-foreground)",
+                    }}
+                  >
+                    {c}
+                  </button>
+                ))}
+              </div>
+            </div>
+          )}
+
+          {/* Step 3: Stretch Focus (stretching only) */}
+          {step === 3 && type === "stretching" && (
+            <div>
+              <p className="text-xs font-semibold mb-1 uppercase tracking-wider" style={{ color: ACCENT }}>Step 4</p>
+              <h3 className="text-foreground text-xl font-bold mb-1">Target Focus</h3>
+              <p className="text-muted-foreground text-sm mb-5">What do you want to stretch?</p>
+              <div className="flex flex-wrap gap-2">
+                {STRETCH_FOCUS.map(m => (
+                  <button
+                    key={m}
+                    onClick={() => toggleMuscle(m)}
+                    className="px-4 py-2.5 rounded-xl text-sm font-semibold transition-all border"
+                    style={{
+                      background: muscles.includes(m) ? `${ACCENT}15` : "var(--card)",
+                      borderColor: muscles.includes(m) ? ACCENT : "var(--border)",
+                      color: muscles.includes(m) ? ACCENT : "var(--muted-foreground)",
+                    }}
+                  >
+                    {m}
+                  </button>
+                ))}
+              </div>
+            </div>
+          )}
+
+          {/* Step 4: Muscles (strength only) */}
+          {step === 4 && type === "strength" && (
+            <div>
+              <p className="text-xs font-semibold mb-1 uppercase tracking-wider" style={{ color: ACCENT }}>Step 5</p>
+              <h3 className="text-foreground text-xl font-bold mb-1">Target Focus</h3>
+              <p className="text-muted-foreground text-sm mb-5">Which muscle groups?</p>
+              <div className="flex flex-wrap gap-2">
+                {MUSCLES.map(m => (
+                  <button
+                    key={m}
+                    onClick={() => toggleMuscle(m)}
+                    className="px-4 py-2.5 rounded-xl text-sm font-semibold transition-all border"
+                    style={{
+                      background: muscles.includes(m) ? `${ACCENT}15` : "var(--card)",
+                      borderColor: muscles.includes(m) ? ACCENT : "var(--border)",
+                      color: muscles.includes(m) ? ACCENT : "var(--muted-foreground)",
+                    }}
+                  >
+                    {m}
+                  </button>
+                ))}
+              </div>
+            </div>
+          )}
+
+          {/* Intensity Step (Módosított lépésszám a kategóriák miatt) */}
+          {((step === 4 && type === "stretching") || 
+            (step === 4 && type === "cardio") || 
+            (step === 5 && type === "strength")) && (
             <div>
               <p className="text-xs font-semibold mb-1 uppercase tracking-wider" style={{ color: ACCENT }}>
-                Step {type === "strength" ? 5 : 4}
+                Step {type === "strength" ? 6 : 5}
               </p>
               <h3 className="text-foreground text-xl font-bold mb-1">Intensity</h3>
               <p className="text-muted-foreground text-sm mb-5">How hard do you want to push?</p>
