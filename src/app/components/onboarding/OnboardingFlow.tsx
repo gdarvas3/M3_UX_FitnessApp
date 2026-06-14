@@ -29,13 +29,13 @@ export function OnboardingFlow() {
   const [nickname, setNickname] = useState("");
   const [email, setEmail] = useState("");
 
-  // Fizikai paraméterek
-  const [age, setAge] = useState("");
-  const [weight, setWeight] = useState("");
-  const [height, setHeight] = useState("");
+  // Fizikai paraméterek (Csúszkákhoz kezdőértékek)
+  const [age, setAge] = useState<number | string>(25);
+  const [weight, setWeight] = useState<number | string>(75);
+  const [height, setHeight] = useState<number | string>(175);
   const [gender, setGender] = useState("");
 
-  // Edzés paraméterek (Több cél kiválasztásához tömböt használunk)
+  // Edzés paraméterek
   const [selectedGoals, setSelectedGoals] = useState<string[]>([]);
   const [level, setLevel] = useState("");
   const [days, setDays] = useState(3);
@@ -44,7 +44,16 @@ export function OnboardingFlow() {
   const { setOnboarded, setUserProfile } = useApp();
   const navigate = useNavigate();
 
+  // Validáció a Step 1-hez
+  const isStep1Valid = 
+    firstName.trim() !== "" && 
+    lastName.trim() !== "" && 
+    nickname.trim() !== "" && 
+    email.trim() !== "";
+
   const goNext = () => {
+    if (step === 1 && !isStep1Valid) return;
+
     if (step < TOTAL_STEPS - 1) {
       setStep(s => s + 1);
     } else {
@@ -73,13 +82,11 @@ export function OnboardingFlow() {
   };
 
   const finish = () => {
-    // A kontextus számára átadjuk a becenevet (vagy a keresztnevet), mint a felhasználó neve
     const finalName = nickname.trim() || firstName.trim() || "Athlete";
     
-    // Itt ideális esetben a további adatokat (kor, magasság, email, stb.) is el lehetne menteni a backendbe
     setUserProfile({ 
       name: finalName, 
-      goal: selectedGoals.join(","), // Vesszővel elválasztva adjuk át a célokat
+      goal: selectedGoals.join(","),
       fitnessLevel: level, 
       daysPerWeek: days 
     });
@@ -92,7 +99,7 @@ export function OnboardingFlow() {
   const progressWidth = `${(step / (TOTAL_STEPS - 1)) * 100}%`;
 
   return (
-    <div className="min-h-screen w-full flex flex-col items-center justify-center bg-background transition-colors duration-300 relative overflow-hidden">
+    <div className="min-h-[100dvh] w-full flex flex-col items-center justify-center bg-background transition-colors duration-300 relative overflow-hidden">
       {/* Background glow */}
       <div
         className="absolute top-0 left-1/2 -translate-x-1/2 w-[300px] h-[300px] rounded-full opacity-10 blur-3xl pointer-events-none"
@@ -107,11 +114,11 @@ export function OnboardingFlow() {
             animate={{ opacity: 1, x: 0 }}
             exit={{ opacity: 0, x: -40 }}
             transition={{ duration: 0.3, ease: "easeInOut" }}
-            className="w-full max-w-[430px] px-6 flex flex-col min-h-screen"
+            className="w-full max-w-[430px] px-6 flex flex-col min-h-[100dvh]"
           >
             {/* Step 0 – Welcome */}
             {step === 0 && (
-              <div className="flex flex-col items-center justify-center flex-1 text-center gap-6">
+              <div className="flex flex-col items-center justify-center flex-1 text-center gap-6 pb-8">
                 <motion.div
                   initial={{ scale: 0.8, opacity: 0 }}
                   animate={{ scale: 1, opacity: 1 }}
@@ -148,9 +155,9 @@ export function OnboardingFlow() {
               </div>
             )}
 
-            {/* Step 1 – Personal Details */}
+            {/* Step 1 – Personal Details (Mandatory) */}
             {step === 1 && (
-              <div className="flex flex-col flex-1 pt-24 gap-6">
+              <div className="flex flex-col flex-1 pt-16 gap-6">
                 <div className="flex flex-col gap-2">
                   <p style={{ color: ACCENT }} className="text-sm font-semibold tracking-wider uppercase">Step 1 of 5</p>
                   <h2 className="text-foreground text-2xl font-bold">Tell us about yourself</h2>
@@ -162,28 +169,32 @@ export function OnboardingFlow() {
                     <input
                       value={firstName}
                       onChange={e => setFirstName(e.target.value)}
-                      placeholder="First Name"
+                      placeholder="First Name *"
+                      required
                       className="w-full bg-card border border-border rounded-xl px-4 py-3 text-foreground text-sm outline-none focus:border-[var(--accent)] transition-colors placeholder:text-muted-foreground"
                       autoFocus
                     />
                     <input
                       value={lastName}
                       onChange={e => setLastName(e.target.value)}
-                      placeholder="Last Name"
+                      placeholder="Last Name *"
+                      required
                       className="w-full bg-card border border-border rounded-xl px-4 py-3 text-foreground text-sm outline-none focus:border-[var(--accent)] transition-colors placeholder:text-muted-foreground"
                     />
                   </div>
                   <input
                     value={nickname}
                     onChange={e => setNickname(e.target.value)}
-                    placeholder="Nickname (How should AI call you?)"
+                    placeholder="Nickname (How should AI call you?) *"
+                    required
                     className="w-full bg-card border border-border rounded-xl px-4 py-3 text-foreground text-sm outline-none focus:border-[var(--accent)] transition-colors placeholder:text-muted-foreground"
                   />
                   <input
                     value={email}
                     onChange={e => setEmail(e.target.value)}
                     type="email"
-                    placeholder="Email Address"
+                    placeholder="Email Address *"
+                    required
                     className="w-full bg-card border border-border rounded-xl px-4 py-3 text-foreground text-sm outline-none focus:border-[var(--accent)] transition-colors placeholder:text-muted-foreground"
                   />
                 </div>
@@ -199,77 +210,94 @@ export function OnboardingFlow() {
                     </button>
                     <button
                       onClick={goNext}
-                      className="flex-1 py-4 rounded-2xl font-semibold text-black text-lg flex items-center justify-center gap-2"
+                      disabled={!isStep1Valid}
+                      className={`flex-1 py-4 rounded-2xl font-semibold text-black text-lg flex items-center justify-center gap-2 transition-opacity ${!isStep1Valid ? 'opacity-50 cursor-not-allowed' : 'opacity-100'}`}
                       style={{ background: ACCENT }}
                     >
                       Continue <ChevronRight size={20} />
                     </button>
                   </div>
-                  <button onClick={skip} className="text-muted-foreground hover:text-foreground text-sm text-center py-2 transition-colors">
-                    Skip for now
-                  </button>
                 </div>
               </div>
             )}
 
-            {/* Step 2 – Physical Stats */}
+            {/* Step 2 – Physical Stats with Sliders */}
             {step === 2 && (
-              <div className="flex flex-col flex-1 pt-24 gap-6">
+              <div className="flex flex-col flex-1 pt-16 gap-5">
                 <div className="flex flex-col gap-2">
                   <p style={{ color: ACCENT }} className="text-sm font-semibold tracking-wider uppercase">Step 2 of 5</p>
                   <h2 className="text-foreground text-2xl font-bold">Your Physical Profile</h2>
                   <p className="text-muted-foreground text-sm">Essential for generating accurate workout plans.</p>
                 </div>
                 
-                <div className="flex flex-col gap-4">
-                  <div className="grid grid-cols-2 gap-3">
-                    <div className="flex flex-col gap-1.5">
-                      <label className="text-muted-foreground text-xs px-1">Age</label>
-                      <input
-                        value={age}
-                        onChange={e => setAge(e.target.value)}
-                        type="number"
-                        placeholder="e.g. 28"
-                        className="w-full bg-card border border-border rounded-xl px-4 py-3 text-foreground text-sm outline-none focus:border-[var(--accent)] transition-colors placeholder:text-muted-foreground"
-                      />
-                    </div>
-                    <div className="flex flex-col gap-1.5">
-                      <label className="text-muted-foreground text-xs px-1">Gender</label>
-                      <select
-                        value={gender}
-                        onChange={e => setGender(e.target.value)}
-                        className="w-full bg-card border border-border rounded-xl px-4 py-3 text-foreground text-sm outline-none focus:border-[var(--accent)] transition-colors appearance-none"
-                      >
-                        <option value="" disabled className="text-muted-foreground">Select...</option>
-                        <option value="male">Male</option>
-                        <option value="female">Female</option>
-                        <option value="other">Other</option>
-                      </select>
-                    </div>
-                  </div>
+                <div className="flex flex-col gap-5 bg-card border border-border rounded-2xl p-5">
                   
-                  <div className="grid grid-cols-2 gap-3">
-                    <div className="flex flex-col gap-1.5">
-                      <label className="text-muted-foreground text-xs px-1">Weight (kg)</label>
-                      <input
-                        value={weight}
-                        onChange={e => setWeight(e.target.value)}
-                        type="number"
-                        placeholder="e.g. 75"
-                        className="w-full bg-card border border-border rounded-xl px-4 py-3 text-foreground text-sm outline-none focus:border-[var(--accent)] transition-colors placeholder:text-muted-foreground"
-                      />
+                  {/* Age Slider */}
+                  <div className="flex flex-col gap-2.5">
+                    <div className="flex justify-between items-center">
+                      <label className="text-muted-foreground text-sm font-medium">Age</label>
+                      <span className="text-foreground font-bold text-lg">{age} <span className="text-muted-foreground text-xs font-normal">years</span></span>
                     </div>
-                    <div className="flex flex-col gap-1.5">
-                      <label className="text-muted-foreground text-xs px-1">Height (cm)</label>
-                      <input
-                        value={height}
-                        onChange={e => setHeight(e.target.value)}
-                        type="number"
-                        placeholder="e.g. 180"
-                        className="w-full bg-card border border-border rounded-xl px-4 py-3 text-foreground text-sm outline-none focus:border-[var(--accent)] transition-colors placeholder:text-muted-foreground"
-                      />
-                    </div>
+                    <input
+                      type="range"
+                      min="10"
+                      max="100"
+                      value={age}
+                      onChange={e => setAge(e.target.value)}
+                      className="w-full h-2 rounded-lg appearance-none cursor-pointer bg-secondary"
+                      style={{ accentColor: ACCENT }}
+                    />
                   </div>
+
+                  {/* Weight Slider */}
+                  <div className="flex flex-col gap-2.5">
+                    <div className="flex justify-between items-center">
+                      <label className="text-muted-foreground text-sm font-medium">Weight</label>
+                      <span className="text-foreground font-bold text-lg">{weight} <span className="text-muted-foreground text-xs font-normal">kg</span></span>
+                    </div>
+                    <input
+                      type="range"
+                      min="30"
+                      max="200"
+                      value={weight}
+                      onChange={e => setWeight(e.target.value)}
+                      className="w-full h-2 rounded-lg appearance-none cursor-pointer bg-secondary"
+                      style={{ accentColor: ACCENT }}
+                    />
+                  </div>
+
+                  {/* Height Slider */}
+                  <div className="flex flex-col gap-2.5">
+                    <div className="flex justify-between items-center">
+                      <label className="text-muted-foreground text-sm font-medium">Height</label>
+                      <span className="text-foreground font-bold text-lg">{height} <span className="text-muted-foreground text-xs font-normal">cm</span></span>
+                    </div>
+                    <input
+                      type="range"
+                      min="100"
+                      max="250"
+                      value={height}
+                      onChange={e => setHeight(e.target.value)}
+                      className="w-full h-2 rounded-lg appearance-none cursor-pointer bg-secondary"
+                      style={{ accentColor: ACCENT }}
+                    />
+                  </div>
+
+                  {/* Gender Select */}
+                  <div className="flex flex-col gap-1.5 mt-1">
+                    <label className="text-muted-foreground text-sm font-medium">Gender</label>
+                    <select
+                      value={gender}
+                      onChange={e => setGender(e.target.value)}
+                      className="w-full bg-background border border-border rounded-xl px-4 py-2.5 text-foreground text-sm outline-none focus:border-[var(--accent)] transition-colors appearance-none"
+                    >
+                      <option value="" disabled className="text-muted-foreground">Select...</option>
+                      <option value="male">Male</option>
+                      <option value="female">Female</option>
+                      <option value="other">Other</option>
+                    </select>
+                  </div>
+
                 </div>
 
                 <div className="flex-1" />
@@ -298,7 +326,7 @@ export function OnboardingFlow() {
 
             {/* Step 3 – Goals (Multiple Selection) */}
             {step === 3 && (
-              <div className="flex flex-col flex-1 pt-24 gap-8">
+              <div className="flex flex-col flex-1 pt-16 gap-8">
                 <div className="flex flex-col gap-2">
                   <p style={{ color: ACCENT }} className="text-sm font-semibold tracking-wider uppercase">Step 3 of 5</p>
                   <h2 className="text-foreground text-2xl font-bold">What are your goals?</h2>
@@ -349,7 +377,7 @@ export function OnboardingFlow() {
 
             {/* Step 4 – Fitness Level */}
             {step === 4 && (
-              <div className="flex flex-col flex-1 pt-24 gap-8">
+              <div className="flex flex-col flex-1 pt-16 gap-8">
                 <div className="flex flex-col gap-2">
                   <p style={{ color: ACCENT }} className="text-sm font-semibold tracking-wider uppercase">Step 4 of 5</p>
                   <h2 className="text-foreground text-2xl font-bold">Your fitness level?</h2>
@@ -407,7 +435,7 @@ export function OnboardingFlow() {
 
             {/* Step 5 – Days per week */}
             {step === 5 && (
-              <div className="flex flex-col flex-1 pt-24 gap-8">
+              <div className="flex flex-col flex-1 pt-16 gap-8">
                 <div className="flex flex-col gap-2">
                   <p style={{ color: ACCENT }} className="text-sm font-semibold tracking-wider uppercase">Step 5 of 5</p>
                   <h2 className="text-foreground text-2xl font-bold">Days per week?</h2>

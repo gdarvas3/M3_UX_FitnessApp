@@ -3,14 +3,48 @@ import { motion, AnimatePresence } from "motion/react";
 import {
   Send, Bot, Zap, ChevronRight, Check, RotateCcw,
   Dumbbell, Play, Bookmark, Calendar, Flame, Clock,
-  Pencil, Trash2, Plus, X
+  Pencil, Trash2, Plus, X, ChevronLeft
 } from "lucide-react";
 import { toast } from "sonner";
 import { useApp } from "../context/AppContext";
 import { fullDayNames, dayNames } from "../data/mockData";
-import { getAIResponseStreaming, generateWorkoutPlan, refineWorkoutPlan, expertAttribution, getRandomExpert, type WorkoutPlan } from "../utils/gemini";
+import { getAIResponseStreaming, generateWorkoutPlan, refineWorkoutPlan, getRandomExpert, type WorkoutPlan } from "../utils/gemini";
 
 const ACCENT = "#CCFF00";
+
+// ─── Helpers ─────────────────────────────────────────────────────────────────
+
+const MONTH_NAMES = [
+  "January","February","March","April","May","June",
+  "July","August","September","October","November","December",
+];
+
+function getTodayDOW(): number {
+  const d = new Date().getDay();
+  return d === 0 ? 6 : d - 1;
+}
+
+function getWeekMonday(): Date {
+  const dow = getTodayDOW();
+  const d = new Date();
+  d.setDate(d.getDate() - dow);
+  d.setHours(0, 0, 0, 0);
+  return d;
+}
+
+function dateToIdx(date: Date, weekMonday: Date): number {
+  return Math.round((date.getTime() - weekMonday.getTime()) / 86400000);
+}
+
+function buildMonthGrid(year: number, month: number): (Date | null)[] {
+  const first = new Date(year, month, 1);
+  const last  = new Date(year, month + 1, 0);
+  const startDOW = first.getDay() === 0 ? 6 : first.getDay() - 1;
+  const grid: (Date | null)[] = Array(startDOW).fill(null);
+  for (let d = 1; d <= last.getDate(); d++) grid.push(new Date(year, month, d));
+  while (grid.length % 7 !== 0) grid.push(null);
+  return grid;
+}
 
 // ─── Types ───────────────────────────────────────────────────────────────────
 
@@ -27,13 +61,12 @@ type GeneratedPlan = WorkoutPlan;
 // ─── Main Component ──────────────────────────────────────────────────────────
 
 export function AICoachPage() {
-  // MÓDOSÍTÁS: Az alapértelmezett fül most már a 'plan'
   const [activeTab, setActiveTab] = useState<"chat" | "plan">("plan");
 
   return (
     <div className="bg-background transition-colors duration-300 flex flex-col" style={{ height: "100%", minHeight: 0 }}>
       {/* Compact Header */}
-      <div className="px-6 pt-8 pb-0">
+      <div className="px-6 pt-8 pb-0 shrink-0">
         <div className="flex items-center gap-2.5 mb-4">
           <div
             className="w-8 h-8 rounded-lg flex items-center justify-center"
@@ -47,7 +80,7 @@ export function AICoachPage() {
           </div>
         </div>
 
-        {/* Compact Tabs - MÓDOSÍTÁS: Gombok felcserélve */}
+        {/* Compact Tabs */}
         <div className="flex gap-1.5 mb-0 p-1 rounded-xl bg-muted border border-border">
           <button
             onClick={() => setActiveTab("plan")}
@@ -79,8 +112,7 @@ export function AICoachPage() {
             initial={{ opacity: 0 }}
             animate={{ opacity: 1 }}
             exit={{ opacity: 0 }}
-            className="flex-1 flex flex-col"
-            style={{ minHeight: 0 }}
+            className="flex-1 flex flex-col min-h-0"
           >
             <PlanGeneratorTab />
           </motion.div>
@@ -90,8 +122,7 @@ export function AICoachPage() {
             initial={{ opacity: 0 }}
             animate={{ opacity: 1 }}
             exit={{ opacity: 0 }}
-            className="flex-1 flex flex-col"
-            style={{ minHeight: 0 }}
+            className="flex-1 flex flex-col min-h-0"
           >
             <ChatTab />
           </motion.div>
@@ -105,15 +136,17 @@ export function AICoachPage() {
 
 function ChatTab() {
   const { userProfile } = useApp();
+  
   const [messages, setMessages] = useState<Message[]>([
     {
       id: "welcome",
       role: "ai",
-      text: `Hey ${userProfile.name || "Athlete"}! I'm your AI coach, backed by methods from world-class athletes. Ask me anything about training, nutrition, recovery, or motivation. What's on your mind?`,
+      text: `Hey ${userProfile?.name || "Athlete"}! I'm your AI coach, backed by methods from world-class athletes. Ask me anything about training, nutrition, recovery, or motivation. What's on your mind?`,
       expert: getRandomExpert(),
       timestamp: new Date(),
     },
   ]);
+  
   const [input, setInput] = useState("");
   const [loading, setLoading] = useState(false);
   const endRef = useRef<HTMLDivElement>(null);
@@ -261,7 +294,7 @@ function ChatTab() {
       </div>
 
       {/* Input */}
-      <div className="px-6 pb-4 pt-2 border-t border-border bg-background">
+      <div className="px-6 pb-4 pt-2 shrink-0 border-t border-border bg-background">
         <div className="flex gap-2">
           <input
             value={input}
@@ -288,12 +321,6 @@ function ChatTab() {
 }
 
 // ─── Plan Generator Tab ──────────────────────────────────────────────────────
-
-const MUSCLE_GROUPS = [
-  "Chest", "Back", "Shoulders", "Biceps", "Triceps",
-  "Legs", "Quadriceps", "Hamstrings", "Glutes", "Calves",
-  "Core", "Full Body",
-];
 
 const EQUIPMENT = ["No Equipment", "Dumbbells", "Barbell", "Machines", "Resistance Bands", "Pull-up Bar"];
 
@@ -385,7 +412,7 @@ function generatePlan(prefs: {
 }
 
 function PlanGeneratorTab() {
-  const { saveTemplate, addToSchedule } = useApp();
+  const { addToSchedule } = useApp();
   const [step, setStep] = useState(0);
   const [type, setType] = useState("strength");
   const [planType, setPlanType] = useState("single");
@@ -396,17 +423,29 @@ function PlanGeneratorTab() {
   const [generatedPlan, setGeneratedPlan] = useState<GeneratedPlan | null>(null);
   const [generating, setGenerating] = useState(false);
   const [saved, setSaved] = useState(false);
-  const [scheduleDay, setScheduleDay] = useState<number | null>(null);
-  const [showSchedule, setShowSchedule] = useState(false);
+  
+  // Modal Schedule States
+  const [showScheduleModal, setShowScheduleModal] = useState(false);
+  const [selectedModalDays, setSelectedModalDays] = useState<number[]>([]);
+  const [modalMonth, setModalMonth] = useState<Date>(() => {
+    const d = new Date(); d.setDate(1); d.setHours(0, 0, 0, 0); return d;
+  });
+
+  const weekMonday = getWeekMonday();
+  const todayIdx   = getTodayDOW();
+  const modalGrid  = buildMonthGrid(modalMonth.getFullYear(), modalMonth.getMonth());
+
   const [showEditModal, setShowEditModal] = useState(false);
   const [editedExercises, setEditedExercises] = useState<GeneratedPlan["exercises"]>([]);
   const [showAddForm, setShowAddForm] = useState(false);
   const [newExName, setNewExName] = useState("");
   const [newExSets, setNewExSets] = useState("3");
   const [newExReps, setNewExReps] = useState("10");
+  
   const [refineInput, setRefineInput] = useState("");
   const [refining, setRefining] = useState(false);
   const [refinements, setRefinements] = useState<{ prompt: string; message: string }[]>([]);
+  
   const refineEndRef = useRef<HTMLDivElement>(null);
 
   const totalSteps = type === "strength" ? 5 : 4;
@@ -429,10 +468,31 @@ function PlanGeneratorTab() {
     setStep(0);
     setGeneratedPlan(null);
     setSaved(false);
-    setScheduleDay(null);
+    setShowScheduleModal(false);
     setShowEditModal(false);
     setRefinements([]);
     setRefineInput("");
+  };
+
+  const openScheduleModal = () => {
+    const d = new Date(); d.setDate(1); d.setHours(0, 0, 0, 0);
+    setModalMonth(d);
+    setSelectedModalDays([]);
+    setShowScheduleModal(true);
+  };
+
+  const closeScheduleModal = () => {
+    setShowScheduleModal(false);
+    setSelectedModalDays([]);
+  };
+
+  const handleScheduleConfirm = () => {
+    selectedModalDays.forEach(dayIdx => {
+      // Dinamikusan generált terveknek egyelőre csak a w1 mock id-ját tudjuk átadni a Schedule funkcióban
+      addToSchedule("w1", dayIdx);
+    });
+    toast.success("Workout scheduled successfully!");
+    closeScheduleModal();
   };
 
   const openEdit = () => {
@@ -475,22 +535,32 @@ function PlanGeneratorTab() {
 
   const refinePrompt = async (prompt: string) => {
     if (!generatedPlan || !prompt.trim() || refining) return;
+    
+    // Elmentjük a kiküldött kérdést, és jelezzük, hogy tölt
+    const userPrompt = prompt.trim();
     setRefining(true);
     setRefineInput("");
+    setRefinements(prev => [...prev, { prompt: userPrompt, message: "" }]); // Ideiglenes üres üzenet
 
     try {
-      const { plan, summary } = await refineWorkoutPlan(generatedPlan, prompt.trim());
+      const { plan, summary } = await refineWorkoutPlan(generatedPlan, userPrompt);
       setGeneratedPlan(plan);
-      setRefinements(prev => [...prev, { prompt: prompt.trim(), message: summary || "Updated the workout plan with Gemini." }]);
+      // Frissítjük az utolsó elemet a kapott válasszal
+      setRefinements(prev => {
+        const newRef = [...prev];
+        newRef[newRef.length - 1].message = summary || "Updated the workout plan with Gemini.";
+        return newRef;
+      });
       setRefining(false);
       return;
     } catch (error) {
       console.error("Gemini refinement failed:", error);
     }
 
+    // Mock fallback, ha a Gemini hibára fut:
     await new Promise(r => setTimeout(r, 1400 + Math.random() * 600));
 
-    const lower = prompt.toLowerCase();
+    const lower = userPrompt.toLowerCase();
     let updated = { ...generatedPlan, exercises: generatedPlan.exercises.map(e => ({ ...e })) };
     let message = "";
 
@@ -596,18 +666,25 @@ function PlanGeneratorTab() {
     }
 
     setGeneratedPlan(updated);
-    setRefinements(prev => [...prev, { prompt: prompt.trim(), message }]);
+    setRefinements(prev => {
+      const newRef = [...prev];
+      newRef[newRef.length - 1].message = message;
+      return newRef;
+    });
     setRefining(false);
   };
 
+  // Folyamatosan tekerjen a refine blokk aljára, ha új elem jön, vagy tölt.
   useEffect(() => {
-    refineEndRef.current?.scrollIntoView({ behavior: "smooth" });
+    if (refining || refinements.length > 0) {
+      setTimeout(() => {
+        refineEndRef.current?.scrollIntoView({ behavior: "smooth", block: "nearest" });
+      }, 100);
+    }
   }, [refinements, refining]);
 
   const toggleEquipment = (e: string) =>
     setEquipment(prev => prev.includes(e) ? prev.filter(x => x !== e) : [...prev, e]);
-  const toggleMuscle = (m: string) =>
-    setMuscles(prev => prev.includes(m) ? prev.filter(x => x !== m) : [...prev, m]);
 
   const nextStep = () => {
     if (step < totalSteps - 1) setStep(s => s + 1);
@@ -616,7 +693,48 @@ function PlanGeneratorTab() {
 
   if (generatedPlan) {
     return (
-      <div className="flex-1 overflow-y-auto px-6 py-4 pb-8" style={{ scrollbarWidth: "none" }}>
+      <div className="flex-1 overflow-y-auto px-6 py-4 pb-12" style={{ scrollbarWidth: "none" }}>
+        
+        {/* Full-Screen Schedule Picker Modal */}
+        <AnimatePresence>
+          {showScheduleModal && (
+            <motion.div initial={{ opacity: 0 }} animate={{ opacity: 1 }} exit={{ opacity: 0 }}
+              className="fixed inset-0 z-[100] flex items-end justify-center pb-[100px] px-4 bg-black/80"
+              onClick={closeScheduleModal}>
+              <motion.div initial={{ y: 50 }} animate={{ y: 0 }} exit={{ y: 50 }} className="w-full max-w-[430px] rounded-3xl bg-card border border-border flex flex-col overflow-hidden" onClick={e => e.stopPropagation()}>
+                <div className="px-5 pt-5 pb-3 border-b border-border">
+                  <h3 className="text-foreground text-lg font-bold">Schedule Workout</h3>
+                  <div className="flex items-center justify-between mt-4">
+                    <button onClick={() => setModalMonth(d => new Date(d.getFullYear(), d.getMonth() - 1, 1))} className="p-2"><ChevronLeft size={14} /></button>
+                    <span className="text-sm font-semibold">{MONTH_NAMES[modalMonth.getMonth()]} {modalMonth.getFullYear()}</span>
+                    <button onClick={() => setModalMonth(d => new Date(d.getFullYear(), d.getMonth() + 1, 1))} className="p-2"><ChevronRight size={14} /></button>
+                  </div>
+                </div>
+                <div className="p-4 flex-1 overflow-y-auto" style={{ maxHeight: "40vh" }}>
+                  <div className="grid grid-cols-7 gap-1">
+                    {modalGrid.map((date, i) => {
+                      if (!date) return <div key={i} />;
+                      const idx = dateToIdx(date, weekMonday);
+                      const isPast = idx < todayIdx;
+                      const isSelected = selectedModalDays.includes(idx);
+                      return (
+                        <button key={i} disabled={isPast} onClick={() => setSelectedModalDays(prev => prev.includes(idx) ? prev.filter(d => d !== idx) : [...prev, idx])}
+                          className={`py-2 rounded-xl text-xs transition-all ${isSelected ? 'bg-accent text-black font-bold' : isPast ? 'opacity-20 pointer-events-none' : 'bg-muted'}`}
+                          style={{ background: isSelected ? ACCENT : undefined }}>
+                          {date.getDate()}
+                        </button>
+                      );
+                    })}
+                  </div>
+                </div>
+                <div className="p-4 border-t border-border">
+                  <button onClick={handleScheduleConfirm} className="w-full py-3 rounded-2xl font-bold text-black" style={{ background: ACCENT }}>Confirm</button>
+                </div>
+              </motion.div>
+            </motion.div>
+          )}
+        </AnimatePresence>
+
         {/* Edit Modal */}
         <AnimatePresence>
           {showEditModal && (
@@ -807,6 +925,7 @@ function PlanGeneratorTab() {
           )}
         </AnimatePresence>
 
+        {/* Header and Stats */}
         <div className="flex items-center justify-between mb-4">
           <div>
             <h3 className="text-foreground font-bold text-lg">Your Plan is Ready!</h3>
@@ -839,6 +958,7 @@ function PlanGeneratorTab() {
           </div>
         </div>
 
+        {/* Exercises List */}
         <div className="flex items-center justify-between mb-3">
           <h4 className="text-foreground font-semibold text-sm">Exercises</h4>
           <button
@@ -849,7 +969,7 @@ function PlanGeneratorTab() {
             <Pencil size={11} /> Edit
           </button>
         </div>
-        <div className="flex flex-col gap-2 mb-5">
+        <div className="flex flex-col gap-2 mb-6">
           {generatedPlan.exercises.map((ex, i) => (
             <div
               key={i}
@@ -869,10 +989,10 @@ function PlanGeneratorTab() {
           ))}
         </div>
 
-        {/* ── Refine with AI ──────────────────────────────────── */}
-        <div className="mb-5 rounded-2xl overflow-hidden bg-card border border-border">
+        {/* ── Refine with AI Card ──────────────────────────────────── */}
+        <div className="mb-6 rounded-2xl overflow-hidden bg-card border border-border flex flex-col">
           {/* Header */}
-          <div className="flex items-center gap-2 px-4 py-3 border-b border-border">
+          <div className="flex items-center gap-2 px-4 py-3 shrink-0 border-b border-border">
             <div className="w-5 h-5 rounded-md flex items-center justify-center shrink-0" style={{ background: `${ACCENT}18` }}>
               <Zap size={11} style={{ color: ACCENT }} />
             </div>
@@ -880,9 +1000,9 @@ function PlanGeneratorTab() {
             <span className="text-muted-foreground text-[10px] ml-auto">describe changes in plain text</span>
           </div>
 
-          {/* Refinement history */}
+          {/* Refinement history (Korlátozott magasságú görgethető rész, a kártyán BELLÜL) */}
           {refinements.length > 0 && (
-            <div className="px-4 pt-3 pb-1 flex flex-col gap-2.5 max-h-52 overflow-y-auto" style={{ scrollbarWidth: "none" }}>
+            <div className="px-4 pt-3 pb-1 flex flex-col gap-2.5 max-h-[300px] overflow-y-auto" style={{ scrollbarWidth: "none" }}>
               {refinements.map((r, i) => (
                 <div key={i}>
                   <div className="flex justify-end mb-1">
@@ -893,36 +1013,38 @@ function PlanGeneratorTab() {
                       {r.prompt}
                     </div>
                   </div>
-                  <div className="flex items-start gap-1.5">
-                    <div className="w-5 h-5 rounded-full flex items-center justify-center shrink-0 mt-0.5" style={{ background: `${ACCENT}18`, border: `1px solid ${ACCENT}35` }}>
-                      <Bot size={10} style={{ color: ACCENT }} />
+                  {/* Ha még tölt az utolsó elem (üzenet üres), akkor töltő animációt mutatunk */}
+                  {r.message ? (
+                    <div className="flex items-start gap-1.5">
+                      <div className="w-5 h-5 rounded-full flex items-center justify-center shrink-0 mt-0.5" style={{ background: `${ACCENT}18`, border: `1px solid ${ACCENT}35` }}>
+                        <Bot size={10} style={{ color: ACCENT }} />
+                      </div>
+                      <div
+                        className="px-3 py-2 rounded-2xl text-xs flex-1 bg-muted text-foreground border border-border"
+                        style={{ borderRadius: "3px 14px 14px 14px" }}
+                      >
+                        {r.message}
+                      </div>
                     </div>
-                    <div
-                      className="px-3 py-2 rounded-2xl text-xs flex-1 bg-muted text-foreground border border-border"
-                      style={{ borderRadius: "3px 14px 14px 14px" }}
-                    >
-                      {r.message}
+                  ) : (
+                    <div className="flex items-center gap-1.5 mb-1">
+                      <div className="w-5 h-5 rounded-full flex items-center justify-center shrink-0" style={{ background: `${ACCENT}18`, border: `1px solid ${ACCENT}35` }}>
+                        <Bot size={10} style={{ color: ACCENT }} />
+                      </div>
+                      <div className="px-3 py-2 rounded-2xl bg-muted border border-border" style={{ borderRadius: "3px 14px 14px 14px" }}>
+                        <div className="flex gap-1 items-center">
+                          {[0, 1, 2].map(idx => (
+                            <motion.div key={idx} className="w-1.5 h-1.5 rounded-full" style={{ background: ACCENT }}
+                              animate={{ opacity: [0.3, 1, 0.3] }}
+                              transition={{ duration: 0.8, repeat: Infinity, delay: idx * 0.2 }}
+                            />
+                          ))}
+                        </div>
+                      </div>
                     </div>
-                  </div>
+                  )}
                 </div>
               ))}
-              {refining && (
-                <div className="flex items-center gap-1.5 mb-1">
-                  <div className="w-5 h-5 rounded-full flex items-center justify-center shrink-0" style={{ background: `${ACCENT}18`, border: `1px solid ${ACCENT}35` }}>
-                    <Bot size={10} style={{ color: ACCENT }} />
-                  </div>
-                  <div className="px-3 py-2 rounded-2xl bg-muted border border-border" style={{ borderRadius: "3px 14px 14px 14px" }}>
-                    <div className="flex gap-1 items-center">
-                      {[0, 1, 2].map(i => (
-                        <motion.div key={i} className="w-1.5 h-1.5 rounded-full" style={{ background: ACCENT }}
-                          animate={{ opacity: [0.3, 1, 0.3] }}
-                          transition={{ duration: 0.8, repeat: Infinity, delay: i * 0.2 }}
-                        />
-                      ))}
-                    </div>
-                  </div>
-                </div>
-              )}
               <div ref={refineEndRef} />
             </div>
           )}
@@ -942,21 +1064,21 @@ function PlanGeneratorTab() {
             </div>
           )}
 
-          {/* Input row */}
-          <div className="flex gap-2 p-3">
+          {/* Input row VISSZATÉVE a kártya aljára */}
+          <div className="flex gap-2 p-3 mt-1 border-t border-border">
             <input
               value={refineInput}
               onChange={e => setRefineInput(e.target.value)}
               onKeyDown={e => e.key === "Enter" && refinePrompt(refineInput)}
               placeholder="e.g. make it shorter, add core work…"
               disabled={refining}
-              className="flex-1 rounded-xl px-3 py-2.5 text-foreground text-xs outline-none placeholder:text-muted-foreground transition-colors bg-muted border border-border"
+              className="flex-1 rounded-xl px-3 py-2 text-foreground text-xs outline-none placeholder:text-muted-foreground transition-colors bg-muted border border-border"
               style={{ borderColor: refineInput ? "var(--muted-foreground)" : "var(--border)" }}
             />
             <button
               onClick={() => refinePrompt(refineInput)}
               disabled={!refineInput.trim() || refining}
-              className="w-9 h-9 rounded-xl flex items-center justify-center shrink-0 transition-all"
+              className="w-8 h-8 rounded-xl flex items-center justify-center shrink-0 transition-all"
               style={{
                 background: refineInput.trim() && !refining ? ACCENT : "var(--muted)",
                 border: `1px solid ${refineInput.trim() && !refining ? ACCENT : "var(--border)"}`,
@@ -968,10 +1090,11 @@ function PlanGeneratorTab() {
         </div>
         {/* ─────────────────────────────────────────────────────── */}
 
-        <div className="flex gap-2 mb-4">
+        {/* Save and Schedule Buttons (A Refine kártya ALATT) */}
+        <div className="flex gap-2">
           <button
             onClick={() => { setSaved(true); }}
-            className="flex-1 py-3 rounded-xl text-sm font-semibold flex items-center justify-center gap-1.5"
+            className="flex-1 py-3.5 rounded-xl text-sm font-semibold flex items-center justify-center gap-1.5"
             style={{
               background: "transparent",
               color: saved ? ACCENT : "var(--muted-foreground)",
@@ -981,100 +1104,14 @@ function PlanGeneratorTab() {
             {saved ? <><Check size={14} /> Saved!</> : <><Bookmark size={14} /> Save Plan</>}
           </button>
           <button
-            onClick={() => setShowSchedule(true)}
-            className="flex-1 py-3 rounded-xl text-sm font-semibold flex items-center justify-center gap-1.5 text-black"
+            onClick={openScheduleModal}
+            className="flex-1 py-3.5 rounded-xl text-sm font-semibold flex items-center justify-center gap-1.5 text-black"
             style={{ background: ACCENT }}
           >
             <Calendar size={14} /> Schedule
           </button>
         </div>
 
-        {/* Schedule picker */}
-        <AnimatePresence>
-          {showSchedule && (
-            <motion.div
-              initial={{ opacity: 0, height: 0 }}
-              animate={{ opacity: 1, height: "auto" }}
-              exit={{ opacity: 0, height: 0 }}
-              className="overflow-hidden"
-            >
-              <p className="text-muted-foreground text-xs mb-2">Select day:</p>
-              <div className="flex flex-col gap-3 mb-3" style={{ maxHeight: 260, overflowY: "auto" }}>
-                {[0, 1, 2, 3, 4].map(w => {
-                  const todayIdx = new Date().getDay() === 0 ? 6 : new Date().getDay() - 1;
-                  const wkMonday = new Date();
-                  wkMonday.setDate(wkMonday.getDate() - todayIdx);
-                  wkMonday.setHours(0, 0, 0, 0);
-                  const maxIdx = todayIdx + 30;
-                  const getDayDate = (abs: number) => new Date(wkMonday.getTime() + abs * 86400000).getDate();
-                  const getDayMon = (abs: number) =>
-                    new Date(wkMonday.getTime() + abs * 86400000).toLocaleDateString("en-US", { month: "short" });
-                  const weekStart = w * 7;
-                  const weekEnd = w * 7 + 6;
-                  if (weekEnd < todayIdx || weekStart > maxIdx) return null;
-                  const weekLabel = w === 0 ? "This Week" : w === 1 ? "Next Week"
-                    : `${getDayMon(weekStart)} ${getDayDate(weekStart)}–${getDayDate(weekEnd)}`;
-                  return (
-                    <div key={w}>
-                      <p className="text-[10px] font-semibold uppercase tracking-widest mb-1.5" style={{ color: ACCENT }}>
-                        {weekLabel}
-                      </p>
-                      <div className="grid grid-cols-7 gap-1">
-                        {dayNames.map((_, j) => {
-                          const i = w * 7 + j;
-                          const isPast = i < todayIdx;
-                          const isBeyond = i > maxIdx;
-                          const disabled = isPast || isBeyond;
-                          const isToday = i === todayIdx;
-                          return (
-                            <button
-                              key={i}
-                              disabled={disabled}
-                              onClick={() => !disabled && setScheduleDay(i)}
-                              className="py-2 rounded-xl flex flex-col items-center gap-0.5 transition-all"
-                              style={{
-                                background: scheduleDay === i ? `${ACCENT}15` : disabled ? "var(--muted)" : "var(--card)",
-                                border: `1px solid ${scheduleDay === i ? ACCENT : disabled ? "var(--muted)" : "var(--border)"}`,
-                                cursor: disabled ? "not-allowed" : "pointer",
-                                opacity: disabled ? 0.3 : 1,
-                              }}
-                            >
-                              <span className="text-[9px]" style={{ color: disabled ? "var(--muted-foreground)" : "var(--muted-foreground)" }}>{dayNames[j]}</span>
-                              <span className="text-[10px] font-semibold" style={{ color: disabled ? "var(--muted-foreground)" : isToday ? ACCENT : "var(--foreground)" }}>{getDayDate(i)}</span>
-                              {isToday && <span className="text-[7px]" style={{ color: ACCENT }}>Today</span>}
-                            </button>
-                          );
-                        })}
-                      </div>
-                    </div>
-                  );
-                })}
-              </div>
-              {scheduleDay !== null && (() => {
-                const todayIdx = new Date().getDay() === 0 ? 6 : new Date().getDay() - 1;
-                const wkMonday = new Date();
-                wkMonday.setDate(wkMonday.getDate() - todayIdx);
-                wkMonday.setHours(0, 0, 0, 0);
-                const d = new Date(wkMonday.getTime() + scheduleDay * 86400000);
-                const lbl = d.toLocaleDateString("en-US", { weekday: "long", month: "short", day: "numeric" });
-                return (
-                  <button
-                    onClick={() => {
-                      addToSchedule("w1", scheduleDay);
-                      setShowSchedule(false);
-                      setScheduleDay(null);
-                      toast.success(`Workout scheduled for ${lbl}!`);
-                    }}
-                    className="w-full py-2.5 rounded-xl text-sm font-semibold text-black"
-                    style={{ background: ACCENT }}
-                  >
-                    Add to {lbl}
-                  </button>
-                );
-              })()}
-            </motion.div>
-          )}
-        </AnimatePresence>
       </div>
     );
   }

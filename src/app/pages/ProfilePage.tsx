@@ -314,7 +314,7 @@ export function ProfilePage() {
               
               <h3 className="text-foreground text-lg font-bold mb-2">Sign Out?</h3>
               <p className="text-muted-foreground text-sm mb-6 leading-relaxed">
-                Are you sure you want to sign out? Your profile information will be reset.
+                Are you sure you want to sign out?.
               </p>
               
               <div className="flex gap-3 w-full">
